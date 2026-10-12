@@ -10,6 +10,7 @@ import requests
 import cv2
 from datetime import date
 
+from desktop.config.app_config import AppConfig
 from desktop.api.client import api
 from desktop.ui.postulantes_view import PostulantesView
 
@@ -42,10 +43,10 @@ class MainDashboardWindow(
 ):
     volver_a_checkin = Signal()
 
-    def __init__(self, token_data=None, api_base_url="http://localhost:8000/api/v1", parent=None):
+    def __init__(self, token_data=None, api_base_url=None, parent=None):
         super().__init__(parent)
         self.token_data = token_data or {}
-        self.api_base_url = api_base_url
+        self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.rol = self.token_data.get("rol", "ADMIN")
         self.setWindowTitle("Sistema Biométrico UMSA - Panel de Administración")
         self.setMinimumSize(1200, 750)

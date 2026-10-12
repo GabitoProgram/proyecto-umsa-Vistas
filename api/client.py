@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any
 from desktop.config.app_config import AppConfig
 
 class APIClient:
-    BASE_URL = 'http://localhost:8000/api/v1'
+    BASE_URL = AppConfig.get_api_base_url()
 
     def __init__(self):
         self.jwt_token: Optional[str] = None

@@ -142,6 +142,7 @@ class BiometriaMixin:
         # Dedos ya registrados y habilitados (para mostrar estado en el diálogo)
         dedos_existentes = set()
         dedos_habilitados = set()
+        huellas_por_dedo = {}
         try:
             respuesta = requests.get(
                 f"{self.api_base_url}/rostros/{id_post}/huellas",
@@ -154,6 +155,8 @@ class BiometriaMixin:
                     tipo_dedo = h.get("tipo_dedo")
                     if tipo_dedo:
                         dedos_existentes.add(tipo_dedo)
+                        if h.get("id_huella"):
+                            huellas_por_dedo[tipo_dedo] = h["id_huella"]
                         if h.get("habilitada", False):
                             dedos_habilitados.add(tipo_dedo)
                 log.debug("Dedos registrados: %s, habilitados: %s", dedos_existentes, dedos_habilitados)
@@ -161,9 +164,22 @@ class BiometriaMixin:
             log.exception("Error consultando huellas: %s", e)
         dedo_libre = next((d for d in range(1, 11) if d not in dedos_existentes), 1)
 
-        dlg = DialogCapturaHuella(postulante, dedo_inicial=dedo_libre, dedos_registrados=dedos_existentes, dedos_habilitados=dedos_habilitados, parent=self)
+        dlg = DialogCapturaHuella(
+            postulante,
+            dedo_inicial=dedo_libre,
+            dedos_registrados=dedos_existentes,
+            dedos_habilitados=dedos_habilitados,
+            huellas_por_dedo=huellas_por_dedo,
+            parent=self,
+        )
         if not dlg.exec():
             return
+
+        if dlg.guardar_habilitaciones_solicitado:
+            if not self._guardar_habilitaciones_huellas(
+                huellas_por_dedo, dlg.obtener_dedos_habilitados()
+            ):
+                return
 
         tipo_dedo = dlg.combo_dedo.currentData() or 1
         plantilla = dlg.plantilla_final
@@ -215,3 +231,28 @@ class BiometriaMixin:
                 QMessageBox.warning(self, "Huella", str(respuesta.json().get("detail", "No se pudo registrar la huella.")))
         except (requests.RequestException, ValueError, OSError) as error:
             QMessageBox.critical(self, "Huella", f"Error al registrar: {error}")
+
+    def _guardar_habilitaciones_huellas(self, huellas_por_dedo, dedos_habilitados):
+        """Persiste el estado de habilitación de las huellas existentes."""
+        try:
+            for tipo_dedo, id_huella in huellas_por_dedo.items():
+                respuesta = requests.patch(
+                    f"{self.api_base_url}/rostros/huellas/{id_huella}/habilitada",
+                    params={"habilitada": tipo_dedo in dedos_habilitados},
+                    headers=self._auth_headers(),
+                    timeout=6,
+                )
+                if respuesta.status_code not in (200, 204):
+                    try:
+                        detalle = respuesta.json().get("detail", respuesta.text)
+                    except ValueError:
+                        detalle = respuesta.text
+                    raise RuntimeError(
+                        f"No se pudo actualizar el dedo {tipo_dedo}: {detalle}"
+                    )
+        except (requests.RequestException, RuntimeError, ValueError) as error:
+            QMessageBox.critical(self, "Huellas", f"No se guardaron los cambios: {error}")
+            return False
+
+        QMessageBox.information(self, "Huellas", "Cambios guardados correctamente.")
+        return True

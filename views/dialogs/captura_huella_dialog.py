@@ -96,12 +96,15 @@ class DialogCapturaHuella(QDialog):
     MAX_HABILITADAS = 2  # Máximo de huellas habilitadas permitidas
     """Diálogo de enrolamiento de huella. Devuelve ``plantilla_final``."""
 
-    def __init__(self, postulante=None, dedo_inicial=1, dedos_registrados=None, dedos_habilitados=None, parent=None):
+    def __init__(self, postulante=None, dedo_inicial=1, dedos_registrados=None,
+                 dedos_habilitados=None, huellas_por_dedo=None, parent=None):
         super().__init__(parent)
         self.postulante = postulante or {}
         self.dedos_registrados = set(dedos_registrados or [])
         self.dedos_habilitados = set(dedos_habilitados or [])
         self.dedos_sin_habilitar = self.dedos_registrados - self.dedos_habilitados
+        self.huellas_por_dedo = dict(huellas_por_dedo or {})
+        self.guardar_habilitaciones_solicitado = False
         self.setWindowTitle("Registro de Huella")
         self.setMinimumWidth(560)
         self.plantilla_final = None
@@ -249,6 +252,18 @@ class DialogCapturaHuella(QDialog):
         fila_botones = QHBoxLayout()
         fila_botones.addStretch()
         fila_botones.addWidget(self.btn_iniciar)
+        self.btn_guardar_habilitaciones = QPushButton("Guardar cambios")
+        self.btn_guardar_habilitaciones.setMinimumHeight(42)
+        self.btn_guardar_habilitaciones.setCursor(Qt.PointingHandCursor)
+        self.btn_guardar_habilitaciones.setEnabled(bool(self.huellas_por_dedo))
+        self.btn_guardar_habilitaciones.setStyleSheet(
+            "QPushButton { background-color: #0F766E; color: white; font-size: 14px;"
+            "font-weight: bold; border-radius: 8px; padding: 8px 18px; border: none; }"
+            "QPushButton:hover { background-color: #115E59; }"
+            "QPushButton:disabled { background-color: #CBD5E1; color: #64748B; }"
+        )
+        self.btn_guardar_habilitaciones.clicked.connect(self._guardar_habilitaciones)
+        fila_botones.addWidget(self.btn_guardar_habilitaciones)
         fila_botones.addWidget(self.btn_cancelar)
         layout.addLayout(fila_botones)
 
@@ -424,6 +439,11 @@ class DialogCapturaHuella(QDialog):
         """Devuelve el conjunto de dedos habilitados."""
         return set(self.dedos_habilitados)
 
+    def _guardar_habilitaciones(self):
+        """Solicita al formulario padre persistir los checks actuales."""
+        self.guardar_habilitaciones_solicitado = True
+        self.accept()
+
     # ══════════════════════ FLUJO DE ENROLAMIENTO ══════════════════════
     def _iniciar_captura(self):
         lector_info = self.combo_lector.currentData()
@@ -493,7 +513,7 @@ class DialogCapturaHuella(QDialog):
         candidatos = []
         if ancho and alto and len(imagen_bytes) >= ancho * alto:
             candidatos.append((ancho, alto))
-        candidatos.extend((256, 300), (384, 289), (320, 240), (256, 288))
+        candidatos.extend([(256, 300), (384, 289), (320, 240), (256, 288)])
         for (w, h) in candidatos:
             if len(imagen_bytes) >= w * h:
                 qimg = QImage(imagen_bytes[: w * h], w, h, w,

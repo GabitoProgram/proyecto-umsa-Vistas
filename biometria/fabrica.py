@@ -20,6 +20,7 @@ Flujo típico::
 """
 
 import logging
+import os
 
 from desktop.biometria.modelos import (
     LectorHuella,
@@ -170,7 +171,9 @@ class LectorZK:
                 "No se pudo acceder al bus USB (falta la regla udev).\n"
                 "Ejecuta:  sudo ./setup_lectores_huella.sh"
             )
-        if not zk_lectores[self.indice].accesible:
+        # En Windows el driver oficial ZKTeco impide que PyUSB reclame la
+        # interfaz, pero la SDK ya confirmó el acceso al abrir el dispositivo.
+        if os.name != "nt" and not zk_lectores[self.indice].accesible:
             raise LectorNoConectadoError(
                 f"El lector {zk_lectores[self.indice].modelo} está "
                 "conectado, pero este usuario no tiene permiso para "

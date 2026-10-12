@@ -15,7 +15,9 @@ import logging
 from desktop.biometria.modelos import (
     LectorHuella,
     VID_ZK,
+    VID_DIGITALPERSONA,
     MODELOS_ZK,
+    MODELOS_DIGITALPERSONA,
 )
 log = logging.getLogger(__name__)
 
@@ -79,14 +81,24 @@ def detectar_lectores():
 
     pyusb_operativo = True
     try:
-        dispositivos = usb.core.find(find_all=True, idVendor=VID_ZK)
+        dispositivos = []
+        for vid in (VID_ZK, VID_DIGITALPERSONA):
+            dispositivos.extend(
+                usb.core.find(find_all=True, idVendor=vid) or []
+            )
         for indice, dispositivo in enumerate(dispositivos):
             try:
                 nombre = _leer_cadena(dispositivo, dispositivo.iProduct)
             except Exception:
                 nombre = None
+            modelo = MODELOS_ZK.get(
+                dispositivo.idProduct,
+                MODELOS_DIGITALPERSONA.get(
+                    dispositivo.idProduct, "Lector de huella USB"
+                ),
+            )
             if not nombre:
-                nombre = MODELOS_ZK.get(dispositivo.idProduct, "Lector ZKTeco")
+                nombre = modelo
             # Intentar abrir para verificar si tenemos permisos de uso.
             accesible = _verificar_acceso(dispositivo)
             lectores.append(
@@ -98,8 +110,7 @@ def detectar_lectores():
                     bus=dispositivo.bus,
                     direccion=dispositivo.address,
                     indice_sdk=indice,
-                    modelo=MODELOS_ZK.get(
-                        dispositivo.idProduct, "Lector ZKTeco"),
+                    modelo=modelo,
                 )
             )
             lectores[-1].accesible = accesible

@@ -163,16 +163,18 @@ class MarcacionMixin:
 
     def _restablecer_identificacion(self):
         self.btn_huella.setEnabled(True)
-        self.btn_huella.setText("🖐 Identificar con Huella (automático)")
+        self.btn_huella.setText("Identificar con huella")
         self.btn_cancelar_huella.setVisible(False)
         self._identificacion = None
         self.actualizar_estado_lector()
 
     # ══════════════════════ RESULTADO EN PANTALLA ══════════════════════
     def mostrar_resultado(self, exito: bool, titulo: str, detalle: str, asiento: str):
-        color = "#16A34A" if exito else "#DC2626"
+        color = "#166534" if exito else "#991B1B"
+        borde = "#4ADE80" if exito else "#F87171"
         self.tarjeta_resultado.setStyleSheet(
-            f"background-color: {color}; border-radius: 10px; padding: 24px;"
+            f"background-color: {color}; border: 1px solid {borde}; "
+            "border-radius: 12px; padding: 28px;"
         )
         self.lbl_res_titulo.setText(titulo)
         self.lbl_res_detalle.setText(detalle)
@@ -244,7 +246,8 @@ class MarcacionMixin:
 
         # Aviso de que la identificación por huella es automática
         self.banner_huella = QLabel(
-            "🖐 <b>Marcación automática:</b> no busques tu nombre. "
+            "<b>Marcación automática</b><br>"
+            "No busques tu nombre. "
             "Pulsa «Identificar con Huella», apoya el dedo en el lector y el "
             "sistema te dice quién eres y registra tu ingreso."
         )
@@ -252,32 +255,37 @@ class MarcacionMixin:
         self.banner_huella.setStyleSheet("""
             QLabel {
                 font-size: 13px;
-                color: #14532D;
-                background-color: #DCFCE7;
-                border: 1px solid #86EFAC;
+                color: #164E63;
+                background-color: #ECFEFF;
+                border: 1px solid #A5F3FC;
                 border-radius: 8px;
-                padding: 10px 14px;
+                padding: 12px 16px;
             }
         """)
         layout_marc.addWidget(self.banner_huella)
 
         # Panel de espera (lo que se ve cuando no hay resultado en pantalla)
         self.panel_espera = QLabel(
-            "👆<br><br>Apoya el dedo en el lector<br>"
-            "<span style='font-size:13px'>y el sistema te identificará</span>"
+            "LISTO PARA MARCAR<br><br>"
+            "Apoya el dedo en el lector<br>"
+            "<span style='font-size:13px'>El sistema identificará al postulante</span>"
         )
         self.panel_espera.setAlignment(Qt.AlignCenter)
         self.panel_espera.setTextFormat(Qt.RichText)
         self.panel_espera.setMinimumSize(640, 400)
         self.panel_espera.setStyleSheet(
-            "background-color: #0F172A; border-radius: 10px; color: #64748B; font-size: 22px;"
+            "background-color: #F8FAFC; border: 1px solid #CBD5E1; "
+            "border-radius: 12px; color: #334155; font-size: 22px;"
         )
         layout_marc.addWidget(self.panel_espera, alignment=Qt.AlignCenter)
 
         # Tarjeta de resultado (ocupa el lugar del panel de espera)
         self.tarjeta_resultado = QFrame()
         self.tarjeta_resultado.setFixedSize(640, 400)
-        self.tarjeta_resultado.setStyleSheet("border-radius: 10px; padding: 24px;")
+        self.tarjeta_resultado.setStyleSheet(
+            "background-color: #334155; border: 1px solid #64748B; "
+            "border-radius: 12px; padding: 28px;"
+        )
         self.tarjeta_resultado.setVisible(False)
         layout_tarjeta = QVBoxLayout(self.tarjeta_resultado)
         layout_tarjeta.setAlignment(Qt.AlignCenter)
@@ -287,18 +295,18 @@ class MarcacionMixin:
         self.lbl_res_titulo.setAlignment(Qt.AlignCenter)
         self.lbl_res_titulo.setWordWrap(True)
         self.lbl_res_titulo.setStyleSheet(
-            "font-size: 32px; font-weight: 900; color: white; background: transparent;")
+            "font-size: 28px; font-weight: 800; color: white; background: transparent;")
         self.lbl_res_detalle = QLabel("")
         self.lbl_res_detalle.setAlignment(Qt.AlignCenter)
         self.lbl_res_detalle.setTextFormat(Qt.RichText)
         self.lbl_res_detalle.setWordWrap(True)
         self.lbl_res_detalle.setStyleSheet(
-            "font-size: 20px; color: white; margin-top: 8px; background: transparent;")
+            "font-size: 18px; color: #F8FAFC; margin-top: 10px; background: transparent;")
         self.lbl_res_asiento = QLabel("")
         self.lbl_res_asiento.setAlignment(Qt.AlignCenter)
         self.lbl_res_asiento.setWordWrap(True)
         self.lbl_res_asiento.setStyleSheet(
-            "font-size: 26px; font-weight: bold; color: white; margin-top: 12px; background: transparent;")
+            "font-size: 22px; font-weight: 700; color: white; margin-top: 14px; background: transparent;")
 
         layout_tarjeta.addWidget(self.lbl_res_titulo)
         layout_tarjeta.addWidget(self.lbl_res_detalle)
@@ -309,7 +317,7 @@ class MarcacionMixin:
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
 
-        self.btn_huella = QPushButton("🖐 Identificar con Huella (automático)")
+        self.btn_huella = QPushButton("Identificar con huella")
         self.btn_huella.setMinimumHeight(48)
         self.btn_huella.setCursor(Qt.PointingHandCursor)
         self.btn_huella.setToolTip(
@@ -318,7 +326,7 @@ class MarcacionMixin:
         )
         self.btn_huella.setStyleSheet("""
             QPushButton {
-                background-color: #0F2C59;
+                background-color: #0F766E;
                 color: white;
                 font-size: 16px;
                 font-weight: bold;
@@ -326,7 +334,7 @@ class MarcacionMixin:
                 border-radius: 8px;
                 border: none;
             }
-            QPushButton:hover { background-color: #1A3E75; }
+            QPushButton:hover { background-color: #115E59; }
             QPushButton:disabled { background-color: #475569; color: rgba(255,255,255,0.5); }
         """)
         self.btn_huella.clicked.connect(self.identificar_huella)

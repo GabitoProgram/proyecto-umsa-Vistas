@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 from PySide6.QtCore import Qt, QTimer, Signal
+from desktop.config.app_config import AppConfig
 from desktop.views.checkin.marcacion_mixin import MarcacionMixin
 from desktop.views.checkin.reconocimiento_mixin import ReconocimientoMixin
 from desktop.views.checkin.contador_mixin import ContadorMixin
@@ -11,9 +12,9 @@ from desktop.views.checkin.contador_mixin import ContadorMixin
 class CheckInView(MarcacionMixin, ReconocimientoMixin, ContadorMixin, QWidget):
     solicitar_login = Signal()
 
-    def __init__(self, parent=None, api_base_url="http://localhost:8000/api/v1"):
+    def __init__(self, parent=None, api_base_url=None):
         super().__init__(parent)
-        self.api_base_url = api_base_url
+        self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.info_examen = {}
 
         self.init_ui()

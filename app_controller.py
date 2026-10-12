@@ -2,15 +2,15 @@ import requests
 from PySide6.QtWidgets import QStackedWidget, QMainWindow, QMessageBox
 from PySide6.QtCore import QTimer
 
-from desktop.config.app_config import AppConfig
-from desktop.views.checkin_view import CheckInView
-from desktop.views.login_view import LoginView
-from desktop.views.main_window import MainDashboardWindow
+from config.app_config import AppConfig
+from views.checkin_view import CheckInView
+from views.login_view import LoginView
+from views.main_window import MainDashboardWindow
 
 class AppController(QMainWindow):
-    def __init__(self, api_base_url="http://localhost:8000/api/v1"):
+    def __init__(self, api_base_url=None):
         super().__init__()
-        self.api_base_url = api_base_url
+        self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.setWindowTitle("Sistema Biométrico - UMSA Medicina")
         self.setMinimumSize(1100, 720)
 
@@ -84,7 +84,10 @@ class AppController(QMainWindow):
     def abrir_panel_administrativo(self, token_data):
         self.mostrar_login()
         if not self.admin_window:
-            self.admin_window = MainDashboardWindow(token_data=token_data)
+            self.admin_window = MainDashboardWindow(
+                token_data=token_data,
+                api_base_url=self.api_base_url,
+            )
             self.admin_window.volver_a_checkin.connect(self.retornar_a_checkin_desde_admin)
         self.admin_window.show()
         self.hide()

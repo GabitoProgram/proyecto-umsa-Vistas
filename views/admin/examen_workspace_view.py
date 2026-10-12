@@ -7,16 +7,17 @@ from PySide6.QtWidgets import (
     QScrollArea, QGridLayout, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal
+from desktop.config.app_config import AppConfig
 
 
 class ExamenWorkspaceView(QWidget):
     volver = Signal()
 
-    def __init__(self, examen_data, token_data=None, api_base_url="http://localhost:8000/api/v1", parent=None):
+    def __init__(self, examen_data, token_data=None, api_base_url=None, parent=None):
         super().__init__(parent)
         self.examen = examen_data
         self.token_data = token_data or {}
-        self.api_base_url = api_base_url
+        self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.tolerancia_actual = self.examen.get("tolerancia_minutos", 10)
         self.aulas_disponibles = []
         self.carrera_nombre = ""

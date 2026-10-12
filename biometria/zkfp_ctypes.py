@@ -34,6 +34,7 @@ import ctypes.util
 import os
 import sys
 import logging
+import time
 
 from desktop.biometria.modelos import (
     MAX_TEMPLATE_SIZE,
@@ -70,7 +71,7 @@ PARAM_TAMANO_IMAGEN = 106
 # Windows: la ZKFinger SDK for Windows instala «zkfp.dll»
 # (misma C API ZKFPM_* que la versión Linux).
 if ES_WINDOWS:
-    NOMBRES_LIB = ("zkfp.dll", "ZKFinger.dll")
+    NOMBRES_LIB = ("libzkfp.dll", "zkfp.dll", "ZKFinger.dll")
     RUTAS_SDK = [
         os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv[0] else "",
         os.getcwd(),
@@ -78,6 +79,8 @@ if ES_WINDOWS:
         os.path.expanduser("~/ZKFingerSDK"),
         r"C:\Program Files\ZKTeco",
         r"C:\Program Files (x86)\ZKTeco",
+        r"C:\Windows\System32",
+        r"C:\Windows\SysWOW64",
     ]
 else:
     NOMBRES_LIB = ("libzkfp.so", "libzkfp.so.1", "libzkfp.so.5.3")
@@ -297,16 +300,26 @@ class ZKFingerSDK:
         tamaño_imagen = self.ancho * self.alto
         buffer_imagen = ctypes.create_string_buffer(tamaño_imagen)
         buffer_plantilla = ctypes.create_string_buffer(MAX_TEMPLATE_SIZE)
-        tamaño_plantilla = ctypes.c_uint(MAX_TEMPLATE_SIZE)
-        ret = self._lib.ZKFPM_AcquireFingerprint(
-            self.hdispositivo, buffer_imagen, tamaño_imagen,
-            buffer_plantilla, ctypes.byref(tamaño_plantilla),
-        )
-        if ret != ZKFP_ERR_OK:
-            raise RuntimeError(f"Error capturando la huella (código {ret})")
-        return (
-            buffer_imagen.raw[:tamaño_imagen],
-            buffer_plantilla.raw[:tamaño_plantilla.value],
+        limite = time.monotonic() + 15
+        ultimo_ret = ZKFP_ERR_CAPTURE
+        while time.monotonic() < limite:
+            tamaño_plantilla = ctypes.c_uint(MAX_TEMPLATE_SIZE)
+            ret = self._lib.ZKFPM_AcquireFingerprint(
+                self.hdispositivo, buffer_imagen, tamaño_imagen,
+                buffer_plantilla, ctypes.byref(tamaño_plantilla),
+            )
+            if ret == ZKFP_ERR_OK:
+                return (
+                    buffer_imagen.raw[:tamaño_imagen],
+                    buffer_plantilla.raw[:tamaño_plantilla.value],
+                )
+            ultimo_ret = ret
+            if ret not in (ZKFP_ERR_CAPTURE, ZKFP_ERR_BUSY):
+                break
+            time.sleep(0.1)
+        raise RuntimeError(
+            "No se pudo capturar la huella en 15 segundos "
+            f"(código {ultimo_ret}). Coloca el dedo sobre el lector."
         )
 
     def capturar_imagen(self):

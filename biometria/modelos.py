@@ -16,10 +16,20 @@ from dataclasses import dataclass, field
 VID_ZK = 0x1B55
 PID_ZK4500 = 0x0840
 PID_ZK9500 = 0x0124
+VID_DIGITALPERSONA = 0x05BA
+PID_DIGITALPERSONA_4000 = 0x0007
+PID_DIGITALPERSONA_4000B = 0x0008
+PID_DIGITALPERSONA_4500 = 0x000A
 
 MODELOS_ZK = {
     PID_ZK4500: "ZK4500",
     PID_ZK9500: "ZK9500",
+}
+
+MODELOS_DIGITALPERSONA = {
+    PID_DIGITALPERSONA_4000: "DigitalPersona U.are.U 4000",
+    PID_DIGITALPERSONA_4000B: "DigitalPersona U.are.U 4000B",
+    PID_DIGITALPERSONA_4500: "DigitalPersona U.are.U 4500",
 }
 
 # Prefijos que identifican el formato de una plantilla guardada.

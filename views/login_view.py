@@ -1,10 +1,13 @@
+import os
+
 import requests
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QFrame, QGraphicsDropShadowEffect, QSizePolicy, QSpacerItem
 )
 from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QSize
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QBrush, QPalette
+from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QBrush, QPalette, QPixmap
+from config.app_config import AppConfig
 
 
 class GradientPanel(QWidget):
@@ -28,9 +31,9 @@ class GradientPanel(QWidget):
 class LoginView(QWidget):
     login_exitoso = Signal(dict)
 
-    def __init__(self, parent=None, api_base_url="http://localhost:8000/api/v1"):
+    def __init__(self, parent=None, api_base_url=None):
         super().__init__(parent)
-        self.api_base_url = api_base_url
+        self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.init_ui()
 
     def init_ui(self):
@@ -48,12 +51,24 @@ class LoginView(QWidget):
         left_layout.setContentsMargins(48, 60, 48, 48)
         left_layout.setSpacing(0)
 
-        # Ícono / emblema
-        lbl_icon = QLabel("🏛")
-        lbl_icon.setStyleSheet("font-size: 56px; background: transparent;")
-        lbl_icon.setAlignment(Qt.AlignLeft)
+        # Emblema institucional; usa un texto de respaldo si aún no se copió la imagen.
+        lbl_icon = QLabel()
+        logo_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "assets", "umsa_logo.jpg"
+        )
+        logo = QPixmap(logo_path)
+        if not logo.isNull():
+            lbl_icon.setPixmap(logo.scaled(116, 116, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            lbl_icon.setText("UMSA")
+            lbl_icon.setStyleSheet(
+                "font-size: 30px; font-weight: 800; color: #FFFFFF; "
+                "background: transparent;"
+            )
+        lbl_icon.setFixedHeight(116)
+        lbl_icon.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         left_layout.addWidget(lbl_icon)
-        left_layout.addSpacing(24)
+        left_layout.addSpacing(20)
 
         # Título principal
         lbl_univ = QLabel("Universidad Mayor\nde San Andrés")
@@ -94,22 +109,18 @@ class LoginView(QWidget):
 
         # Features del sistema
         features = [
-            ("🔒", "Autenticación segura con roles"),
-            ("👁", "Verificación facial en tiempo real"),
-            ("🖐", "Lectura de huella dactilar"),
-            ("📊", "Monitoreo y auditoría completa"),
+            "Autenticación segura con roles",
+            "Verificación facial en tiempo real",
+            "Lectura de huella dactilar",
+            "Monitoreo y auditoría completa",
         ]
-        for icon, text in features:
+        for text in features:
             feat_layout = QHBoxLayout()
-            feat_layout.setSpacing(12)
-            lbl_feat_icon = QLabel(icon)
-            lbl_feat_icon.setStyleSheet("font-size: 18px; background: transparent;")
-            lbl_feat_icon.setFixedWidth(28)
             lbl_feat_text = QLabel(text)
             lbl_feat_text.setStyleSheet(
-                "font-size: 13px; color: rgba(255, 255, 255, 0.7); background: transparent;"
+                "font-size: 13px; color: rgba(255, 255, 255, 0.78); "
+                "padding-left: 4px; background: transparent;"
             )
-            feat_layout.addWidget(lbl_feat_icon)
             feat_layout.addWidget(lbl_feat_text)
             feat_layout.addStretch()
             left_layout.addLayout(feat_layout)
@@ -158,9 +169,12 @@ class LoginView(QWidget):
         card_layout.setContentsMargins(44, 44, 44, 36)
         card_layout.setSpacing(0)
 
-        # Ícono del formulario
-        lbl_form_icon = QLabel("🔐")
-        lbl_form_icon.setStyleSheet("font-size: 40px; background: transparent;")
+        # Identificador textual del formulario
+        lbl_form_icon = QLabel("ACCESO ADMINISTRATIVO")
+        lbl_form_icon.setStyleSheet(
+            "font-size: 11px; font-weight: 700; letter-spacing: 2px; "
+            "color: #2563EB; background: transparent;"
+        )
         lbl_form_icon.setAlignment(Qt.AlignCenter)
         card_layout.addWidget(lbl_form_icon)
         card_layout.addSpacing(16)
@@ -268,7 +282,7 @@ class LoginView(QWidget):
         card_layout.addSpacing(10)
 
         # ——— Botón Ingresar ———
-        self.btn_ingresar = QPushButton("  Ingresar")
+        self.btn_ingresar = QPushButton("Ingresar")
         self.btn_ingresar.setMinimumHeight(48)
         self.btn_ingresar.setCursor(Qt.PointingHandCursor)
         self.btn_ingresar.setStyleSheet("""
@@ -318,7 +332,7 @@ class LoginView(QWidget):
             return
 
         self.btn_ingresar.setEnabled(False)
-        self.btn_ingresar.setText("  Verificando...")
+        self.btn_ingresar.setText("Verificando...")
         self.lbl_error.setVisible(False)
 
         try:
@@ -341,8 +355,8 @@ class LoginView(QWidget):
             self.mostrar_error(f"Error inesperado: {str(e)}")
         finally:
             self.btn_ingresar.setEnabled(True)
-            self.btn_ingresar.setText("  Ingresar")
+            self.btn_ingresar.setText("Ingresar")
 
     def mostrar_error(self, mensaje: str):
-        self.lbl_error.setText(f"⚠  {mensaje}")
+        self.lbl_error.setText(mensaje)
         self.lbl_error.setVisible(True)
