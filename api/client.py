@@ -89,7 +89,7 @@ class APIClient:
         return resp.json(), resp.status_code
 
 
-    def listar_postulantes(self, skip: int = 0, limit: int = 100):
+    def listar_postulantes(self, skip: int = 0, limit: int = 1000):
         url = f"{self.BASE_URL}/postulantes?skip={skip}&limit={limit}"
         try:
             resp = requests.get(url, headers=self._headers(require_jwt=True), timeout=6)

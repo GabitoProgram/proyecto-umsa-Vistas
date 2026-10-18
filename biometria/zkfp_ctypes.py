@@ -300,7 +300,7 @@ class ZKFingerSDK:
         tamaño_imagen = self.ancho * self.alto
         buffer_imagen = ctypes.create_string_buffer(tamaño_imagen)
         buffer_plantilla = ctypes.create_string_buffer(MAX_TEMPLATE_SIZE)
-        limite = time.monotonic() + 15
+        limite = time.monotonic() + 4
         ultimo_ret = ZKFP_ERR_CAPTURE
         while time.monotonic() < limite:
             tamaño_plantilla = ctypes.c_uint(MAX_TEMPLATE_SIZE)

@@ -1,4 +1,5 @@
 import os
+import unicodedata
 import pandas as pd
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -161,12 +162,16 @@ class PostulantesView(QWidget):
         self.txt_buscar.setMinimumHeight(40)
         self.txt_buscar.textChanged.connect(self.filtrar_tabla)
 
+        self.lbl_resultados = QLabel("0 postulantes")
+        self.lbl_resultados.setStyleSheet("color: #64748B; font-size: 12px;")
+
         self.btn_refrescar = QPushButton("Actualizar")
         self.btn_refrescar.setFixedHeight(40)
         self.btn_refrescar.setCursor(Qt.PointingHandCursor)
         self.btn_refrescar.clicked.connect(self.cargar_postulantes)
 
         filtro_layout.addWidget(self.txt_buscar)
+        filtro_layout.addWidget(self.lbl_resultados)
         filtro_layout.addWidget(self.btn_refrescar)
         layout.addLayout(filtro_layout)
 
@@ -186,12 +191,15 @@ class PostulantesView(QWidget):
 
     def cargar_postulantes(self):
         self.btn_refrescar.setEnabled(False)
-        self.postulantes_data = api.listar_postulantes(limit=200)
+        self.postulantes_data = api.listar_postulantes(limit=1000)
         self.poblar_tabla(self.postulantes_data)
         self.btn_refrescar.setEnabled(True)
 
     def poblar_tabla(self, lista):
         self.tabla.setRowCount(0)
+        self.lbl_resultados.setText(
+            f"{len(lista)} postulante{'s' if len(lista) != 1 else ''}"
+        )
         for row_idx, p in enumerate(lista):
             self.tabla.insertRow(row_idx)
 
@@ -240,19 +248,34 @@ class PostulantesView(QWidget):
             self.tabla.setItem(row_idx, 5, item_huella)
 
     def filtrar_tabla(self, texto: str):
-        texto = texto.lower().strip()
+        texto = self._normalizar_busqueda(texto)
         if not texto:
             self.poblar_tabla(self.postulantes_data)
             return
 
         filtrados = []
         for p in self.postulantes_data:
-            ci = str(p.get("ci", "")).lower()
-            nombre = f"{p.get('nombres', '')} {p.get('apellidos', '')}".lower()
-            if texto in ci or texto in nombre:
+            ci = self._normalizar_busqueda(p.get("ci", ""))
+            nombres = self._normalizar_busqueda(p.get("nombres", ""))
+            apellidos = self._normalizar_busqueda(p.get("apellidos", ""))
+            if (
+                texto in ci
+                or texto in nombres
+                or texto in apellidos
+                or texto in f"{nombres} {apellidos}"
+            ):
                 filtrados.append(p)
 
         self.poblar_tabla(filtrados)
+
+    @staticmethod
+    def _normalizar_busqueda(valor):
+        texto = str(valor or "").casefold()
+        return "".join(
+            caracter
+            for caracter in unicodedata.normalize("NFD", texto)
+            if unicodedata.category(caracter) != "Mn"
+        )
 
     def abrir_modal_nuevo(self):
         dlg = DialogNuevoPostulante(self)

@@ -37,10 +37,11 @@ class IdentificacionHuellaController:
     así que la identificación se hace probando las huellas de una en una.
     """
 
-    def __init__(self, vista, app_key, id_examen):
+    def __init__(self, vista, app_key, id_examen, datos_cache=None):
         self.vista = vista
         self.app_key = app_key
         self.id_examen = id_examen
+        self.datos_cache = datos_cache
         self.lector = None
         self.candidatos = []
         self.sin_habilitar = []
@@ -57,8 +58,12 @@ class IdentificacionHuellaController:
     # ── ciclo de vida ──────────────────────────────────────────────
     def iniciar(self):
         self._activo = True
-        self.vista._estado_identificacion("Descargando huellas del examen…")
-        QTimer.singleShot(0, self._descargar)
+        if self.datos_cache is not None:
+            self.vista._estado_identificacion("Preparando lector de huella…")
+            QTimer.singleShot(0, lambda: self._procesar_datos(self.datos_cache))
+        else:
+            self.vista._estado_identificacion("Descargando huellas del examen…")
+            QTimer.singleShot(0, self._descargar)
 
     def detener(self):
         """Corta la identificación en curso (botón cancelar / cierre)."""
@@ -87,6 +92,12 @@ class IdentificacionHuellaController:
             self._fallar(f"No se pudieron descargar las huellas: {error}")
             return
 
+        self.vista._guardar_huellas_examen_cache(datos)
+        self._procesar_datos(datos)
+
+    def _procesar_datos(self, datos):
+        if not self._activo:
+            return
         self.candidatos = datos.get("candidatos") or []
         self.sin_habilitar = datos.get("sin_habilitar") or []
         self.vista._resumen_huellas(len(self.candidatos), len(self.sin_habilitar))
@@ -112,6 +123,7 @@ class IdentificacionHuellaController:
         self._formato = max(set(formatos), key=formatos.count)
         self._indices = [i for i, f in enumerate(formatos) if f == self._formato]
         self._posicion = 0
+        self._captura_actual = None
 
         QTimer.singleShot(0, self._conectar)
 
@@ -135,11 +147,29 @@ class IdentificacionHuellaController:
         self.vista._estado_identificacion(
             f"Apoya el dedo en el lector — buscando ({self._posicion + 1}/{total})…"
         )
-        indice = self._indices[self._posicion]
         try:
-            coincide, score = self._comparar_una(self._plantillas[indice])
+            indice = self._indices[self._posicion]
+            if hasattr(self.lector, "comparar_captura_con_plantilla"):
+                if self._captura_actual is None:
+                    self.vista._estado_identificacion("Apoya el dedo en el lector…")
+                    self._captura_actual = self.lector.capturar_plantilla_actual()
+                coincide, score = self.lector.comparar_captura_con_plantilla(
+                    self._captura_actual, self._plantillas[indice]
+                )
+            else:
+                coincide, score = self._comparar_una(self._plantillas[indice])
         except FormatoIncompatibleError:
             coincide, score = False, 0.0
+        except RuntimeError as error:
+            if "No se pudo capturar la huella" in str(error):
+                self._posicion = 0
+                self._captura_actual = None
+                self.vista._estado_identificacion("Apoya el dedo en el lector…")
+                QTimer.singleShot(250, self._comparar)
+                return
+            log.exception("Error comparando con el lector")
+            self._fallar(f"Error del lector de huella: {error}")
+            return
         except Exception as error:
             log.exception("Error comparando con el lector")
             self._fallar(f"Error del lector de huella: {error}")

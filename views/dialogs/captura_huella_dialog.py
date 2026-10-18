@@ -4,17 +4,37 @@ Funciona con cualquier lector soportado:
 - **DigitalPersona U.are.U** (y otros compatibles con libfprint).
 - **ZKTeco ZK4500/ZK9500** (con la ZKFinger SDK instalada).
 
-Muestra vista previa de la huella, selector de dedo, selector
-de lector (si hay varios) y el flujo de enrolamiento multi-etapa.
+Muestra un mapa de manos con el estado de cada dedo, vista previa de la
+huella, selector de lector (si hay varios) y el flujo de enrolamiento
+multi-etapa.
 """
 
 import logging
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import QRectF, QTimer, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QImage,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QTransform,
+)
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
-    QProgressBar, QDialogButtonBox, QSizePolicy,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
 )
 
 from desktop.biometria import (
@@ -33,6 +53,221 @@ from desktop.biometria import (
 log = logging.getLogger(__name__)
 
 
+# ======================================================================
+# Mapa de manos
+# ======================================================================
+# Tipos de dedo: 0 pulgar, 1 índice, 2 medio, 3 anular, 4 meñique
+_TIPOS_DEDO = (
+    ("pulgar", 0),
+    ("indice", 1), ("índice", 1),
+    ("medio", 2), ("corazon", 2), ("corazón", 2),
+    ("anular", 3),
+    ("menique", 4), ("meñique", 4),
+)
+
+
+def _clasificar_dedo(numero, nombre):
+    """Devuelve (mano, tipo) leyendo el nombre; si no se entiende, por número."""
+    texto = str(nombre).lower()
+    mano = "izq" if "izq" in texto else ("der" if "der" in texto else None)
+    tipo = next((i for clave, i in _TIPOS_DEDO if clave in texto), None)
+    if mano is None or tipo is None:
+        mano = "der" if numero <= 5 else "izq"
+        tipo = (numero - 1) % 5
+    return mano, tipo
+
+
+def _mapa_dedos(nombres):
+    posiciones = {n: _clasificar_dedo(n, nombre) for n, nombre in nombres.items()}
+    if len(set(posiciones.values())) != len(posiciones):
+        # Nombres ambiguos: se asume 1-5 mano derecha y 6-10 izquierda.
+        posiciones = {n: ("der" if n <= 5 else "izq", (n - 1) % 5) for n in nombres}
+    return posiciones
+
+
+def _capsula(cx, base_y, largo, ancho, angulo):
+    camino = QPainterPath()
+    camino.addRoundedRect(
+        QRectF(cx - ancho / 2, base_y - largo, ancho, largo + 26), ancho / 2, ancho / 2
+    )
+    giro = QTransform()
+    giro.translate(cx, base_y + 6)
+    giro.rotate(angulo)
+    giro.translate(-cx, -(base_y + 6))
+    return giro.map(camino)
+
+
+class MapaManos(QWidget if False else QFrame):
+    """Dos manos dibujadas; cada dedo cambia de color según su estado."""
+
+    dedo_clicked = Signal(int)
+
+    ANCHO = 250.0
+    ALTO = 232.0
+
+    # estado -> (relleno, borde)
+    COLORES = {
+        "habilitado": ("#22C55E", "#15803D"),
+        "registrado": ("#FBBF24", "#B45309"),
+        "vacio": ("#E8EEF5", "#C3CFDD"),
+    }
+    TEXTO_ESTADO = {
+        "habilitado": "Registrado y habilitado",
+        "registrado": "Registrado, sin habilitar",
+        "vacio": "Sin registrar",
+    }
+
+    def __init__(self, nombres, parent=None):
+        super().__init__(parent)
+        self.nombres = dict(nombres)
+        self._posiciones = _mapa_dedos(self.nombres)
+        self._estados = {}
+        self._seleccionado = None
+        self._hover = None
+
+        # Geometría base de una mano izquierda (la derecha se obtiene espejada)
+        self._dedos_unidad = {
+            4: _capsula(67, 126, 62, 24, -9),
+            3: _capsula(97, 126, 82, 24, -4),
+            2: _capsula(127, 126, 92, 24, 0),
+            1: _capsula(157, 126, 84, 24, 5),
+            0: _capsula(176, 190, 66, 27, 40),
+        }
+        self._palma_unidad = QPainterPath()
+        self._palma_unidad.addRoundedRect(QRectF(50, 118, 130, 96), 30, 30)
+
+        self.setMouseTracking(True)
+        self.setMinimumSize(520, 262)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    # -- API --------------------------------------------------------------
+    def set_estados(self, registrados, habilitados):
+        self._estados = {}
+        for numero in self.nombres:
+            if numero in habilitados:
+                self._estados[numero] = "habilitado"
+            elif numero in registrados:
+                self._estados[numero] = "registrado"
+            else:
+                self._estados[numero] = "vacio"
+        self.update()
+
+    def set_seleccionado(self, numero):
+        self._seleccionado = numero
+        self.update()
+
+    # -- Geometría --------------------------------------------------------
+    def _geometria(self):
+        ancho, alto = self.width(), self.height()
+        margen, hueco, alto_etiqueta = 10.0, 28.0, 24.0
+        escala = min(
+            (ancho - 2 * margen - hueco) / (2 * self.ANCHO),
+            (alto - 2 * margen - alto_etiqueta) / self.ALTO,
+        )
+        escala = max(0.4, min(escala, 1.5))
+        total = 2 * self.ANCHO * escala + hueco
+        x0 = (ancho - total) / 2
+        y0 = (alto - (self.ALTO * escala + alto_etiqueta)) / 2
+
+        izq = QTransform()
+        izq.translate(x0, y0)
+        izq.scale(escala, escala)
+        der = QTransform()
+        der.translate(x0 + 2 * self.ANCHO * escala + hueco, y0)
+        der.scale(-escala, escala)
+        transformaciones = {"izq": izq, "der": der}
+
+        dedos = {
+            numero: transformaciones[mano].map(self._dedos_unidad[tipo])
+            for numero, (mano, tipo) in self._posiciones.items()
+        }
+        palmas = []
+        for mano, etiqueta in (("izq", "Mano izquierda"), ("der", "Mano derecha")):
+            borde_izq = x0 if mano == "izq" else x0 + self.ANCHO * escala + hueco
+            rect = QRectF(borde_izq, y0 + self.ALTO * escala + 2, self.ANCHO * escala, alto_etiqueta)
+            palmas.append((transformaciones[mano].map(self._palma_unidad), rect, etiqueta))
+        return dedos, palmas
+
+    def _dedo_en(self, pos):
+        dedos, _ = self._geometria()
+        for numero, camino in dedos.items():
+            if camino.contains(pos):
+                return numero
+        return None
+
+    # -- Pintado ----------------------------------------------------------
+    def paintEvent(self, _event):
+        pintor = QPainter(self)
+        pintor.setRenderHint(QPainter.Antialiasing)
+        dedos, palmas = self._geometria()
+
+        for numero, camino in dedos.items():
+            estado = self._estados.get(numero, "vacio")
+            relleno, borde = self.COLORES[estado]
+            seleccionado = numero == self._seleccionado
+            color = QColor(relleno)
+            if seleccionado and estado == "vacio":
+                color = QColor("#DCE8FD")
+            if numero == self._hover:
+                color = color.lighter(106)
+
+            caja = camino.boundingRect()
+            degradado = QLinearGradient(caja.topLeft(), caja.bottomLeft())
+            degradado.setColorAt(0.0, color.lighter(112))
+            degradado.setColorAt(1.0, color)
+
+            if seleccionado:
+                pintor.setBrush(Qt.NoBrush)
+                pintor.setPen(QPen(QColor(47, 111, 237, 70), 9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                pintor.drawPath(camino)
+            pintor.setBrush(degradado)
+            pintor.setPen(QPen(QColor("#2F6FED") if seleccionado else QColor(borde),
+                               3 if seleccionado else 1.4))
+            pintor.drawPath(camino)
+
+        fuente = QFont()
+        fuente.setPointSizeF(9)
+        fuente.setBold(True)
+        pintor.setFont(fuente)
+        for palma, rect, etiqueta in palmas:
+            pintor.setBrush(QColor("#F4F7FB"))
+            pintor.setPen(QPen(QColor("#D5DEE9"), 1.4))
+            pintor.drawPath(palma)
+            pintor.setPen(QColor("#64748B"))
+            pintor.drawText(rect, Qt.AlignCenter, etiqueta)
+        pintor.end()
+
+    # -- Ratón ------------------------------------------------------------
+    def _texto_tooltip(self, numero):
+        estado = self._estados.get(numero, "vacio")
+        return f"{self.nombres.get(numero, numero)}\n{self.TEXTO_ESTADO[estado]}"
+
+    def mouseMoveEvent(self, evento):
+        numero = self._dedo_en(evento.position())
+        if numero != self._hover:
+            self._hover = numero
+            self.setCursor(Qt.PointingHandCursor if numero else Qt.ArrowCursor)
+            self.setToolTip(self._texto_tooltip(numero) if numero else "")
+            self.update()
+        super().mouseMoveEvent(evento)
+
+    def leaveEvent(self, evento):
+        self._hover = None
+        self.setCursor(Qt.ArrowCursor)
+        self.update()
+        super().leaveEvent(evento)
+
+    def mousePressEvent(self, evento):
+        if evento.button() == Qt.LeftButton:
+            numero = self._dedo_en(evento.position())
+            if numero:
+                self.dedo_clicked.emit(numero)
+        super().mousePressEvent(evento)
+
+
+# ======================================================================
+# Controlador de enrolamiento
+# ======================================================================
 class EnrolamientoController:
     """Controlador de enrolamiento que ejecuta en el hilo principal.
 
@@ -92,9 +327,72 @@ class EnrolamientoController:
         self._activo = False
 
 
+# ======================================================================
+# Diálogo
+# ======================================================================
 class DialogCapturaHuella(QDialog):
-    MAX_HABILITADAS = 2  # Máximo de huellas habilitadas permitidas
     """Diálogo de enrolamiento de huella. Devuelve ``plantilla_final``."""
+
+    MAX_HABILITADAS = 2  # Máximo de huellas habilitadas permitidas
+
+    ESTILOS = """
+        QDialog { background: #F1F5F9; }
+        QLabel { background: transparent; border: none; }
+
+        QFrame#card {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 14px;
+        }
+
+        QLabel#dlgTitulo    { color: #0F2C59; font-size: 22px; font-weight: 800; }
+        QLabel#dlgSubtitulo { color: #64748B; font-size: 13px; }
+        QLabel#cardTitulo   { color: #1E293B; font-size: 15px; font-weight: 800; }
+        QLabel#cardNota     { color: #94A3B8; font-size: 12px; }
+        QLabel#campoEtiqueta { color: #334155; font-size: 12px; font-weight: 700; }
+        QLabel#dedoNombre   { color: #0F172A; font-size: 17px; font-weight: 800; }
+        QLabel#leyenda      { color: #64748B; font-size: 11px; }
+        QLabel#estadoCaptura { color: #334155; font-size: 13px; font-weight: 600; }
+        QLabel#toques       { color: #64748B; font-size: 12px; font-weight: 600; }
+
+        QProgressBar#progresoCaptura {
+            background: #E2E8F0; border: none; border-radius: 5px;
+            min-height: 10px; max-height: 10px;
+        }
+        QProgressBar#progresoCaptura::chunk {
+            background: #2F6FED; border-radius: 5px;
+        }
+
+        QPushButton#btnPrimario {
+            background: #1E54B7; color: #FFFFFF; border: none;
+            border-radius: 10px; padding: 10px 18px;
+            font-size: 14px; font-weight: 700;
+        }
+        QPushButton#btnPrimario:hover    { background: #17449A; }
+        QPushButton#btnPrimario:pressed  { background: #12367D; }
+        QPushButton#btnPrimario:disabled { background: #A9BEE3; color: #FFFFFF; }
+
+        QPushButton#btnSecundario {
+            background: #FFFFFF; color: #334155;
+            border: 1px solid #CBD5E1; border-radius: 10px;
+            padding: 10px 18px; font-size: 14px; font-weight: 600;
+        }
+        QPushButton#btnSecundario:hover { background: #F1F5F9; }
+
+        QPushButton#btnExito {
+            background: #16A34A; color: #FFFFFF; border: none;
+            border-radius: 10px; padding: 10px 18px;
+            font-size: 14px; font-weight: 700;
+        }
+        QPushButton#btnExito:hover    { background: #15803D; }
+        QPushButton#btnExito:disabled { background: #CBD5E1; color: #64748B; }
+    """
+
+    COLORES_BANNER = {
+        "aviso": ("#FEF3C7", "#FCD34D", "#92400E"),
+        "ok": ("#DCFCE7", "#86EFAC", "#166534"),
+        "error": ("#FEE2E2", "#FCA5A5", "#991B1B"),
+    }
 
     def __init__(self, postulante=None, dedo_inicial=1, dedos_registrados=None,
                  dedos_habilitados=None, huellas_por_dedo=None, parent=None):
@@ -106,186 +404,239 @@ class DialogCapturaHuella(QDialog):
         self.huellas_por_dedo = dict(huellas_por_dedo or {})
         self.guardar_habilitaciones_solicitado = False
         self.setWindowTitle("Registro de Huella")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(940)
+        self.setStyleSheet(self.ESTILOS)
         self.plantilla_final = None
         self.tipo_lector = ""
         self._worker = None
         self._lector_info = []
-        self._check_dedos_habilitar = {}  # numero -> QCheckBox
 
         self._crear_ui(dedo_inicial)
         self._actualizar_lectores()
 
     # ══════════════════════ INTERFAZ ══════════════════════
     def _crear_ui(self, dedo_inicial):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 18, 22, 18)
-        layout.setSpacing(14)
+        raiz = QVBoxLayout(self)
+        raiz.setContentsMargins(24, 20, 24, 18)
+        raiz.setSpacing(14)
 
         # Encabezado
         nombre = self.postulante.get("nombre_completo")
         if not nombre and self.postulante.get("nombres"):
             nombre = f"{self.postulante.get('nombres')} {self.postulante.get('apellidos', '')}".strip()
         ci = self.postulante.get("ci", "")
-        lbl_titulo = QLabel(
-            f"Registro de huella — {nombre or 'Postulante'}"
-            + (f"  (CI: {ci})" if ci else "")
-        )
-        lbl_titulo.setStyleSheet("font-size: 17px; font-weight: 800; color: #0F2C59;")
-        layout.addWidget(lbl_titulo)
+        detalle = nombre or "Postulante"
+        if ci:
+            detalle += f"   ·   CI {ci}"
 
-        # Banner de estado
+        lbl_titulo = QLabel("Registro de huella")
+        lbl_titulo.setObjectName("dlgTitulo")
+        lbl_sub = QLabel(detalle)
+        lbl_sub.setObjectName("dlgSubtitulo")
+        raiz.addWidget(lbl_titulo)
+        raiz.addWidget(lbl_sub)
+
+        # Banner de estado del lector
         self.banner = QLabel()
         self.banner.setWordWrap(True)
-        self.banner.setStyleSheet("font-size: 12px; padding: 8px 10px; border-radius: 6px;")
         self.banner.setVisible(False)
-        layout.addWidget(self.banner)
+        raiz.addWidget(self.banner)
 
-        # Cuadrícula de dedos registrados/pendientes + checkboxes habilitar
-        from PySide6.QtWidgets import QGridLayout, QPushButton, QCheckBox, QWidget
-        grid_dedos = QGridLayout()
-        grid_dedos.setSpacing(6)
-        self.lbl_dedos = QLabel("Dedos (marca ✅ para habilitar, máx. 2):")
-        self.lbl_dedos.setStyleSheet("font-size: 13px; font-weight: 700; color: #334155;")
-        layout.addWidget(self.lbl_dedos)
+        # Cuerpo: dedos a la izquierda, captura a la derecha
+        cuerpo = QHBoxLayout()
+        cuerpo.setSpacing(16)
+        cuerpo.addLayout(self._crear_columna_dedos(dedo_inicial), 1)
+        cuerpo.addWidget(self._crear_tarjeta_captura(), 0)
+        raiz.addLayout(cuerpo, 1)
 
-        self.dedo_botones = {}
-        self._check_dedos_habilitar = {}
-        for i, (numero, nombre_dedo) in enumerate(DEDO_NOMBRES.items()):
-            fila = i // 5
-            col = i % 5
-            contenedor = QWidget()
-            vbox = QVBoxLayout(contenedor)
-            vbox.setContentsMargins(2, 2, 2, 2)
-            vbox.setSpacing(2)
+        # Barra inferior
+        barra = QHBoxLayout()
+        barra.addStretch()
+        self.btn_cancelar = QPushButton("Cancelar")
+        self.btn_cancelar.setObjectName("btnSecundario")
+        self.btn_cancelar.setMinimumHeight(42)
+        self.btn_cancelar.setCursor(Qt.PointingHandCursor)
+        self.btn_cancelar.clicked.connect(self.reject)
 
-            btn = QPushButton(f"{numero} — {nombre_dedo}")
-            btn.setMinimumHeight(40)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setProperty("dedo_numero", numero)
-            btn.clicked.connect(lambda _, n=numero: self._dedo_seleccionado(n))
+        self.btn_guardar_habilitaciones = QPushButton("Guardar cambios")
+        self.btn_guardar_habilitaciones.setObjectName("btnExito")
+        self.btn_guardar_habilitaciones.setMinimumHeight(42)
+        self.btn_guardar_habilitaciones.setCursor(Qt.PointingHandCursor)
+        self.btn_guardar_habilitaciones.setEnabled(bool(self.huellas_por_dedo))
+        self.btn_guardar_habilitaciones.clicked.connect(self._guardar_habilitaciones)
 
-            chk = QCheckBox("Habilitar")
-            chk.setEnabled(numero in self.dedos_registrados)
-            chk.setChecked(numero in self.dedos_habilitados)
-            chk.stateChanged.connect(lambda state, n=numero: self._cambiar_habilitar(n, state))
+        barra.addWidget(self.btn_cancelar)
+        barra.addWidget(self.btn_guardar_habilitaciones)
+        raiz.addLayout(barra)
 
-            vbox.addWidget(btn)
-            if numero in self.dedos_registrados:
-                vbox.addWidget(chk)
+        self._actualizar_estado_dedos()
 
-            self.dedo_botones[numero] = btn
-            self._check_dedos_habilitar[numero] = chk
-            grid_dedos.addWidget(contenedor, fila, col)
-        layout.addLayout(grid_dedos)
-        # Selectores de lector y dedo
-        fila_selectores = QHBoxLayout()
-        fila_selectores.addWidget(QLabel("Lector:"))
-        self.combo_lector = QComboBox()
-        self.combo_lector.setMinimumHeight(34)
-        self.combo_lector.setMinimumWidth(260)
-        self.combo_lector.currentIndexChanged.connect(self._lector_cambiado)
-        fila_selectores.addWidget(self.combo_lector)
+    def _crear_columna_dedos(self, dedo_inicial):
+        columna = QVBoxLayout()
+        columna.setSpacing(14)
 
-        fila_selectores.addSpacing(18)
-        fila_selectores.addWidget(QLabel("Dedo:"))
-        self.combo_dedo = QComboBox()
+        # ── Tarjeta con el mapa de manos ──
+        tarjeta_manos = QFrame()
+        tarjeta_manos.setObjectName("card")
+        lay = QVBoxLayout(tarjeta_manos)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(4)
+
+        titulo = QLabel("Selecciona el dedo")
+        titulo.setObjectName("cardTitulo")
+        nota = QLabel("Haz clic sobre un dedo para elegirlo. El color indica si ya tiene huella.")
+        nota.setObjectName("cardNota")
+        lay.addWidget(titulo)
+        lay.addWidget(nota)
+
+        self.mapa = MapaManos(DEDO_NOMBRES)
+        self.mapa.dedo_clicked.connect(self._dedo_seleccionado)
+        lay.addWidget(self.mapa, 1)
+        lay.addLayout(self._crear_leyenda())
+        columna.addWidget(tarjeta_manos, 1)
+
+        # ── Tarjeta del dedo seleccionado ──
+        tarjeta_dedo = QFrame()
+        tarjeta_dedo.setObjectName("card")
+        lay2 = QVBoxLayout(tarjeta_dedo)
+        lay2.setContentsMargins(20, 16, 20, 16)
+        lay2.setSpacing(10)
+
+        fila = QHBoxLayout()
+        self.lbl_dedo_nombre = QLabel("")
+        self.lbl_dedo_nombre.setObjectName("dedoNombre")
+        self.lbl_dedo_estado = QLabel("")
+        fila.addWidget(self.lbl_dedo_nombre)
+        fila.addStretch()
+        fila.addWidget(self.lbl_dedo_estado)
+        lay2.addLayout(fila)
+
+        self.chk_habilitar = QCheckBox("Habilitar este dedo para la verificación")
+        self.chk_habilitar.toggled.connect(self._cambiar_habilitar)
+        lay2.addWidget(self.chk_habilitar)
+
+        self.lbl_resumen = QLabel("")
+        self.lbl_resumen.setObjectName("cardNota")
+        lay2.addWidget(self.lbl_resumen)
+        columna.addWidget(tarjeta_dedo)
+
+        # Selector interno (oculto) para compatibilidad con el código que lee
+        # ``combo_dedo.currentData()`` desde fuera del diálogo.
+        self.combo_dedo = QComboBox(self)
         for numero, nombre_dedo in DEDO_NOMBRES.items():
             self.combo_dedo.addItem(f"{numero} — {nombre_dedo}", numero)
-        if dedo_inicial in DEDO_NOMBRES:
-            self.combo_dedo.setCurrentIndex(dedo_inicial - 1)
-        self.combo_dedo.setMinimumHeight(34)
-        self.combo_dedo.setMinimumWidth(230)
+        indice = self.combo_dedo.findData(dedo_inicial)
+        if indice >= 0:
+            self.combo_dedo.setCurrentIndex(indice)
+        self.combo_dedo.setVisible(False)
         self.combo_dedo.currentIndexChanged.connect(self._actualizar_estado_dedos)
-        fila_selectores.addWidget(self.combo_dedo)
-        fila_selectores.addStretch()
-        layout.addLayout(fila_selectores)
+        return columna
+
+    def _crear_leyenda(self):
+        fila = QHBoxLayout()
+        fila.setSpacing(18)
+        items = (
+            ("Habilitado", "#22C55E", "#15803D", 1),
+            ("Registrado, sin habilitar", "#FBBF24", "#B45309", 1),
+            ("Sin registrar", "#E8EEF5", "#C3CFDD", 1),
+            ("Seleccionado", "#FFFFFF", "#2F6FED", 2),
+        )
+        for texto, fondo, borde, grosor in items:
+            punto = QFrame()
+            punto.setFixedSize(12, 12)
+            punto.setStyleSheet(
+                f"background: {fondo}; border: {grosor}px solid {borde}; border-radius: 6px;"
+            )
+            etiqueta = QLabel(texto)
+            etiqueta.setObjectName("leyenda")
+            sub = QHBoxLayout()
+            sub.setSpacing(6)
+            sub.addWidget(punto)
+            sub.addWidget(etiqueta)
+            fila.addLayout(sub)
+        fila.addStretch()
+        return fila
+
+    def _crear_tarjeta_captura(self):
+        tarjeta = QFrame()
+        tarjeta.setObjectName("card")
+        tarjeta.setFixedWidth(340)
+        lay = QVBoxLayout(tarjeta)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(10)
+
+        titulo = QLabel("Captura de huella")
+        titulo.setObjectName("cardTitulo")
+        lay.addWidget(titulo)
+
+        etiqueta_lector = QLabel("Lector")
+        etiqueta_lector.setObjectName("campoEtiqueta")
+        lay.addWidget(etiqueta_lector)
+        self.combo_lector = QComboBox()
+        self.combo_lector.setMinimumHeight(36)
+        self.combo_lector.currentIndexChanged.connect(self._lector_cambiado)
+        lay.addWidget(self.combo_lector)
 
         # Visor de la huella
         self.visor = QLabel()
         self.visor.setAlignment(Qt.AlignCenter)
-        self.visor.setMinimumSize(256, 300)
-        self.visor.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.visor.setFixedSize(256, 300)
         self._mostrar_placeholder()
-        contenedor_visor = QHBoxLayout()
-        contenedor_visor.addStretch()
-        contenedor_visor.addWidget(self.visor)
-        contenedor_visor.addStretch()
-        layout.addLayout(contenedor_visor)
+        fila_visor = QHBoxLayout()
+        fila_visor.addStretch()
+        fila_visor.addWidget(self.visor)
+        fila_visor.addStretch()
+        lay.addLayout(fila_visor)
 
-        # Estado y progreso
         self.lbl_estado = QLabel("Pulsa «Iniciar captura» y coloca el dedo en el lector.")
+        self.lbl_estado.setObjectName("estadoCaptura")
         self.lbl_estado.setWordWrap(True)
-        self.lbl_estado.setStyleSheet("font-size: 13px; color: #334155; font-weight: 600;")
-        layout.addWidget(self.lbl_estado)
+        self.lbl_estado.setMinimumHeight(40)
+        lay.addWidget(self.lbl_estado)
+
+        self.lbl_toques = QLabel("Toques: 0")
+        self.lbl_toques.setObjectName("toques")
+        lay.addWidget(self.lbl_toques)
 
         self.progreso = QProgressBar()
+        self.progreso.setObjectName("progresoCaptura")
         self.progreso.setRange(0, 3)
         self.progreso.setValue(0)
-        self.progreso.setTextVisible(True)
-        self.progreso.setFormat("Toques: %v/%m")
-        layout.addWidget(self.progreso)
+        self.progreso.setTextVisible(False)
+        lay.addWidget(self.progreso)
 
-        # Botones
-        self.btn_iniciar = QPushButton("▶ Iniciar captura")
-        self.btn_iniciar.setMinimumHeight(42)
+        self.btn_iniciar = QPushButton("Iniciar captura")
+        self.btn_iniciar.setObjectName("btnPrimario")
+        self.btn_iniciar.setMinimumHeight(44)
         self.btn_iniciar.setCursor(Qt.PointingHandCursor)
-        self.btn_iniciar.setStyleSheet(
-            "QPushButton { background-color: #2563EB; color: white; font-size: 14px;"
-            "font-weight: bold; border-radius: 8px; padding: 8px 18px; border: none; }"
-            "QPushButton:hover { background-color: #1D4ED8; }"
-            "QPushButton:disabled { background-color: #93C5FD; }"
-        )
         self.btn_iniciar.clicked.connect(self._iniciar_captura)
-
-        self.btn_cancelar = QPushButton("Cancelar")
-        self.btn_cancelar.setMinimumHeight(42)
-        self.btn_cancelar.setCursor(Qt.PointingHandCursor)
-        self.btn_cancelar.setStyleSheet(
-            "QPushButton { background-color: #F1F5F9; color: #334155; font-size: 14px;"
-            "font-weight: 600; border-radius: 8px; padding: 8px 18px;"
-            "border: 1px solid #CBD5E1; }"
-            "QPushButton:hover { background-color: #E2E8F0; }"
-        )
-        self.btn_cancelar.clicked.connect(self.reject)
-
-        fila_botones = QHBoxLayout()
-        fila_botones.addStretch()
-        fila_botones.addWidget(self.btn_iniciar)
-        self.btn_guardar_habilitaciones = QPushButton("Guardar cambios")
-        self.btn_guardar_habilitaciones.setMinimumHeight(42)
-        self.btn_guardar_habilitaciones.setCursor(Qt.PointingHandCursor)
-        self.btn_guardar_habilitaciones.setEnabled(bool(self.huellas_por_dedo))
-        self.btn_guardar_habilitaciones.setStyleSheet(
-            "QPushButton { background-color: #0F766E; color: white; font-size: 14px;"
-            "font-weight: bold; border-radius: 8px; padding: 8px 18px; border: none; }"
-            "QPushButton:hover { background-color: #115E59; }"
-            "QPushButton:disabled { background-color: #CBD5E1; color: #64748B; }"
-        )
-        self.btn_guardar_habilitaciones.clicked.connect(self._guardar_habilitaciones)
-        fila_botones.addWidget(self.btn_guardar_habilitaciones)
-        fila_botones.addWidget(self.btn_cancelar)
-        layout.addLayout(fila_botones)
-
-        # Actualizar estado de dedos (después de que combo_dedo exista)
-        self._actualizar_estado_dedos()
+        lay.addWidget(self.btn_iniciar)
+        return tarjeta
 
     def _mostrar_placeholder(self):
-        self.visor.setText("👆\n\nSin captura")
+        self.visor.setText("Vista previa\nde la huella")
         self.visor.setStyleSheet(
-            "background-color: #0B1220; border: 2px solid #E2E8F0; border-radius: 10px;"
-            "color: #475569; font-size: 13px;"
+            "background-color: #0B1220; border: 2px solid #E2E8F0; border-radius: 12px;"
+            "color: #64748B; font-size: 13px; font-weight: 600;"
         )
 
-    def _banner_info(self, texto, color_fondo="#FEF3C7", color_borde="#FCD34D", color_texto="#92400E"):
+    def _banner(self, texto, tipo="aviso"):
+        fondo, borde, color = self.COLORES_BANNER[tipo]
         self.banner.setText(texto)
         self.banner.setStyleSheet(
-            f"font-size: 12px; padding: 8px 10px; border-radius: 6px; "
-            f"background-color: {color_fondo}; border: 1px solid {color_borde}; "
-            f"color: {color_texto};"
+            f"background: {fondo}; border: 1px solid {borde}; color: {color};"
+            "border-radius: 10px; padding: 10px 14px; font-size: 12px; font-weight: 600;"
         )
         self.banner.setVisible(True)
 
+    def _pintar_estado_dedo(self, texto, fondo, color):
+        self.lbl_dedo_estado.setText(texto)
+        self.lbl_dedo_estado.setStyleSheet(
+            f"background: {fondo}; color: {color}; border-radius: 10px;"
+            "padding: 3px 12px; font-size: 11px; font-weight: 700;"
+        )
+
+    # ══════════════════════ LECTORES ══════════════════════
     def _actualizar_lectores(self):
         """Detecta los lectores y llena el selector."""
         self._lector_info = []
@@ -300,15 +651,15 @@ class DialogCapturaHuella(QDialog):
         sdk_zk = sdk_zk_disponible()
 
         if not usb_ok:
-            self._banner_info("⚠️ No se pudo acceder al bus USB. "
-                              "Ejecuta: sudo ./setup_lectores_huella.sh")
+            self._banner("No se pudo acceder al bus USB. "
+                         "Ejecuta: sudo ./setup_lectores_huella.sh", "aviso")
             self.btn_iniciar.setEnabled(False)
             self.combo_lector.blockSignals(False)
             return
 
         if not lectores:
-            self._banner_info("⚠️ No se detectó ningún lector de huella.\n"
-                              "Conecta el lector por USB.")
+            self._banner("No se detectó ningún lector de huella. "
+                         "Conecta el lector por USB.", "aviso")
             self.btn_iniciar.setEnabled(False)
             self.combo_lector.blockSignals(False)
             return
@@ -334,25 +685,22 @@ class DialogCapturaHuella(QDialog):
                 faltante.append("ZKFinger SDK de ZKTeco (para ZK4500/ZK9500)")
             if any(l.tipo == "libfprint" for l in lectores) and not libfprint_ok:
                 faltante.append("libfprint-2")
-            self._banner_info(
-                f"Lector(es) conectado(s): "
-                f"{', '.join(l.modelo for l in lectores)}\n\n"
+            self._banner(
+                f"Lector(es) conectado(s): {', '.join(l.modelo for l in lectores)}.\n"
                 f"Falta por instalar: {', '.join(faltante)}.\n"
                 "Ejecuta:  ./setup_lectores_huella.sh",
+                "aviso",
             )
             self.btn_iniciar.setEnabled(False)
         else:
-            lista = "\n".join(f"• {l.descripcion}" for l in lectores)
-            self._banner_info(
-                f"✅ Lector(es) detectado(s):\n{lista}",
-                color_fondo="#DCFCE7", color_borde="#86EFAC", color_texto="#166534",
-            )
+            lista = "\n".join(f"•  {l.descripcion}" for l in lectores)
+            self._banner(f"Lector(es) detectado(s):\n{lista}", "ok")
             self.btn_iniciar.setEnabled(True)
         self.combo_lector.blockSignals(False)
         if self.combo_lector.count() > 0:
             self.combo_lector.setCurrentIndex(0)
 
-    def _lector_cambiado(self, _indice):
+    def _texto_instruccion(self):
         lector = self.combo_lector.currentData()
         if lector and lector.scan_type == "swipe":
             self.lbl_estado.setText("Pulsa «Iniciar captura» y PASA el dedo por el lector.")
@@ -362,66 +710,56 @@ class DialogCapturaHuella(QDialog):
                 "y colócalo en el lector."
             )
 
-    def _actualizar_estado_dedos(self):
-        """Actualiza la apariencia de los botones de dedos.
-        Colores:
-        - Verde: registrado y habilitado
-        - Gris: solo registrado (pendiente de habilitación)
-        - Rojo: no registrado
-        - Azul: seleccionado actualmente
-        """
-        for numero, btn in self.dedo_botones.items():
-            registrado = numero in self.dedos_registrados
-            seleccionado = (self.combo_dedo.currentData() or 1) == numero
-            if seleccionado:
-                btn.setStyleSheet(
-                    "background-color: #2563EB; color: white; font-weight: bold; "
-                    "border: 2px solid #1D4ED8; border-radius: 6px; font-size: 11px;"
-                )
-            elif registrado:
-                btn.setStyleSheet(
-                    "background-color: #16A34A; color: white; font-weight: bold; "
-                    "border: 1px solid #15803D; border-radius: 6px; font-size: 11px;"
-                )
-            elif numero in getattr(self, 'dedos_sin_habilitar', set()):
-                btn.setStyleSheet(
-                    "background-color: #9CA3AF; color: white; font-weight: bold; "
-                    "border: 1px solid #6B7280; border-radius: 6px; font-size: 11px;"
-                )
-            else:
-                btn.setStyleSheet(
-                    "background-color: #EF4444; color: white; font-weight: bold; "
-                    "border: 1px solid #DC2626; border-radius: 6px; font-size: 11px;"
-                )
+    def _lector_cambiado(self, _indice):
+        self._texto_instruccion()
+
+    # ══════════════════════ DEDOS ══════════════════════
+    def _dedo_actual(self):
+        return self.combo_dedo.currentData() or 1
+
+    def _actualizar_estado_dedos(self, *_):
+        """Refresca el mapa de manos y el panel del dedo seleccionado."""
+        numero = self._dedo_actual()
+        self.mapa.set_estados(self.dedos_registrados, self.dedos_habilitados)
+        self.mapa.set_seleccionado(numero)
+
+        self.lbl_dedo_nombre.setText(DEDO_NOMBRES.get(numero, f"Dedo {numero}"))
+        registrado = numero in self.dedos_registrados
+        habilitado = numero in self.dedos_habilitados
+        if habilitado:
+            self._pintar_estado_dedo("Registrado y habilitado", "#DCFCE7", "#166534")
+        elif registrado:
+            self._pintar_estado_dedo("Registrado, sin habilitar", "#FEF3C7", "#92400E")
+        else:
+            self._pintar_estado_dedo("Sin registrar", "#E8EEF5", "#475569")
+
+        self.chk_habilitar.blockSignals(True)
+        self.chk_habilitar.setEnabled(registrado)
+        self.chk_habilitar.setChecked(habilitado)
+        self.chk_habilitar.blockSignals(False)
+
+        self.lbl_resumen.setText(
+            f"Huellas habilitadas: {len(self.dedos_habilitados)} de {self.MAX_HABILITADAS}"
+            + ("" if registrado else "   ·   Registra este dedo para poder habilitarlo")
+        )
 
     def _dedo_seleccionado(self, numero):
-        """Selecciona un dedo de la cuadrícula."""
-        self.combo_dedo.setCurrentIndex(numero - 1)
+        """Selecciona un dedo desde el mapa de manos."""
+        indice = self.combo_dedo.findData(numero)
+        if indice >= 0:
+            self.combo_dedo.setCurrentIndex(indice)
         self._actualizar_estado_dedos()
-        # Actualizar texto de estado
-        lector = self.combo_lector.currentData()
-        if lector and lector.scan_type == "swipe":
-            self.lbl_estado.setText("Pulsa «Iniciar captura» y PASA el dedo por el lector.")
-        else:
-            self.lbl_estado.setText(
-                "Pulsa «Iniciar captura»; luego levanta el dedo "
-                "y colócalo en el lector."
-            )
+        self._texto_instruccion()
 
-    def _cambiar_habilitar(self, numero, state):
-        """Habilita/deshabilita un dedo con límite de MAX_HABILITADAS."""
-        from PySide6.QtCore import Qt
-        if state == Qt.Checked.value:
-            # Contar cuántos hay habilitados (excluyendo este)
-            otros_habilitados = [n for n, chk in self._check_dedos_habilitar.items()
-                                 if chk.isChecked() and n != numero]
-            if len(otros_habilitados) >= self.MAX_HABILITADAS:
-                # Revertir: no permitir más de MAX_HABILITADAS
-                chk = self._check_dedos_habilitar[numero]
-                chk.blockSignals(True)
-                chk.setChecked(False)
-                chk.blockSignals(False)
-                from PySide6.QtWidgets import QMessageBox
+    def _cambiar_habilitar(self, marcado):
+        """Habilita/deshabilita el dedo actual con límite de MAX_HABILITADAS."""
+        numero = self._dedo_actual()
+        if marcado:
+            otros = [n for n in self.dedos_habilitados if n != numero]
+            if len(otros) >= self.MAX_HABILITADAS:
+                self.chk_habilitar.blockSignals(True)
+                self.chk_habilitar.setChecked(False)
+                self.chk_habilitar.blockSignals(False)
                 QMessageBox.warning(
                     self, "Límite alcanzado",
                     f"Solo puedes habilitar un máximo de {self.MAX_HABILITADAS} huellas.\n"
@@ -450,13 +788,15 @@ class DialogCapturaHuella(QDialog):
         if not lector_info:
             return
         log.info("=== INICIANDO CAPTURA: lector=%s, indice=%s, dedo=%s ===",
-                 lector_info.nombre, lector_info.indice_sdk, self.combo_dedo.currentData())
+                 lector_info.nombre, lector_info.indice_sdk, self._dedo_actual())
         self.btn_iniciar.setEnabled(False)
+        etapas = lector_info.etapas_enrolamiento if lector_info.tipo == "libfprint" else 3
+        self.progreso.setRange(0, etapas)
         self.progreso.setValue(0)
-        self.progreso.setRange(0, lector_info.etapas_enrolamiento if lector_info.tipo == "libfprint" else 3)
+        self.lbl_toques.setText(f"Toques: 0 de {etapas}")
         tipo = "swipe" if lector_info.scan_type == "swipe" else "press"
         self.lbl_estado.setText(
-            "Pasa el dedo por lector…" if tipo == "swipe"
+            "Pasa el dedo por el lector…" if tipo == "swipe"
             else "Levanta el dedo y colócalo en el lector…"
         )
         # Crear el lector en el hilo principal (libfprint necesita el main context de GLib)
@@ -466,43 +806,46 @@ class DialogCapturaHuella(QDialog):
             log.debug("Lector creado OK: %s", lector)
         except Exception as e:
             log.exception("Error creando lector")
-            self.lbl_estado.setText(f"❌ Error creando lector: {e}")
+            self.lbl_estado.setText(f"Error creando lector: {e}")
             self.btn_iniciar.setEnabled(True)
             return
         # Usar EnrolamientoController (ejecuta en el hilo principal vía QTimer)
-        self._controller = EnrolamientoController(
-            self, lector, self.combo_dedo.currentData() or 1
-        )
+        self._controller = EnrolamientoController(self, lector, self._dedo_actual())
         log.debug("Iniciando EnrolamientoController...")
         self._controller.iniciar()
 
     def _on_avance(self, completadas, total, imagen, ancho, alto):
         self.progreso.setRange(0, total)
         self.progreso.setValue(completadas)
+        self.lbl_toques.setText(f"Toques: {completadas} de {total}")
         if imagen:
             self._mostrar_imagen(imagen, ancho, alto)
         if completadas < total:
             self.lbl_estado.setText(
-                f"✅ Toque {completadas}/{total} capturado. "
-                "Levanta el dedo y toca de nuevo (el MISMO dedo)."
+                f"Toque {completadas} de {total} capturado. "
+                "Levanta el dedo y toca de nuevo (el mismo dedo)."
             )
 
     def _on_plantilla_lista(self, plantilla, tipo_lector):
         self.plantilla_final = prefijar_plantilla(plantilla, tipo_lector)
         self.tipo_lector = tipo_lector
         self.progreso.setValue(self.progreso.maximum())
-        self.lbl_estado.setText("🎉 ¡Huella registrada! La plantilla está lista.")
+        self.lbl_toques.setText(
+            f"Toques: {self.progreso.maximum()} de {self.progreso.maximum()}"
+        )
+        self.lbl_estado.setText("Huella registrada. La plantilla está lista.")
         self.btn_iniciar.setEnabled(False)
-        self.btn_iniciar.setText("✔ Registrada")
+        self.btn_iniciar.setText("Registrada")
         self.btn_cancelar.setText("Aceptar")
         # Cerrar el diálogo automáticamente para que se envíe la petición POST
         self.accept()
 
     def _on_error(self, mensaje):
-        self.lbl_estado.setText(f"❌ {mensaje}")
+        self.lbl_estado.setText(f"Error: {mensaje}")
         self.btn_iniciar.setEnabled(True)
-        self.btn_iniciar.setText("↻ Reintentar")
+        self.btn_iniciar.setText("Reintentar")
         self.progreso.setValue(0)
+        self.lbl_toques.setText("Toques: 0")
 
     def _mostrar_imagen(self, imagen_bytes, ancho=0, alto=0):
         """Renderiza una imagen cruda en escala de grises."""
@@ -516,13 +859,14 @@ class DialogCapturaHuella(QDialog):
         candidatos.extend([(256, 300), (384, 289), (320, 240), (256, 288)])
         for (w, h) in candidatos:
             if len(imagen_bytes) >= w * h:
-                qimg = QImage(imagen_bytes[: w * h], w, h, w,
-                              QImage.Format_Grayscale8)
+                datos = bytes(imagen_bytes[: w * h])
+                # .copy() para que la imagen no dependa del buffer temporal
+                qimg = QImage(datos, w, h, w, QImage.Format_Grayscale8).copy()
                 pixmap = QPixmap.fromImage(qimg)
                 self.visor.setPixmap(pixmap.scaled(256, 300, Qt.KeepAspectRatio,
                                                    Qt.SmoothTransformation))
                 self.visor.setStyleSheet(
-                    "background-color: #0B1220; border: 2px solid #86EFAC; border-radius: 10px;"
+                    "background-color: #0B1220; border: 2px solid #86EFAC; border-radius: 12px;"
                 )
                 return
 

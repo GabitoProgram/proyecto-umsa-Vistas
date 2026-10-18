@@ -261,6 +261,20 @@ class LectorZK:
             raise ErrorLector(f"Error comparando plantillas (código {score})")
         return score >= UMBRAL_VERIFICACION, float(score)
 
+    def capturar_plantilla_actual(self):
+        """Captura una sola vez para comparar contra varias plantillas."""
+        self._requerido()
+        (_imagen, _w, _h), plantilla = self.capturar()
+        return plantilla
+
+    def comparar_captura_con_plantilla(self, captura, plantilla_guardada_cruda):
+        """Compara una captura viva ya tomada sin volver a usar el lector."""
+        self._requerido()
+        score = self.sdk.comparar_plantillas(plantilla_guardada_cruda, captura)
+        if score < 0:
+            raise ErrorLector(f"Error comparando plantillas (código {score})")
+        return score >= UMBRAL_VERIFICACION, float(score)
+
     def _requerido(self):
         if not self.conectado:
             raise ErrorLector("El lector no está conectado")

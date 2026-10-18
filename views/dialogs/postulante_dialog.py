@@ -8,12 +8,15 @@ import cv2
 
 
 class DialogEditarPostulante(QDialog):
-    def __init__(self, postulante, parent=None, carreras_texto=None):
+    def __init__(self, postulante, parent=None, carreras_texto=None, carreras=None, carreras_seleccionadas=None):
         super().__init__(parent)
         self.postulante = postulante
         self.carreras_texto = carreras_texto
+        self.carreras = carreras or []
+        self.carreras_seleccionadas_iniciales = set(carreras_seleccionadas or [])
+        self.checks_carreras = {}
         self.setWindowTitle("Editar Postulante")
-        self.setFixedSize(450, 640 if carreras_texto else 580)
+        self.setFixedSize(480, 700 if self.carreras else 580)
         self.init_ui()
 
     def init_ui(self):
@@ -63,18 +66,17 @@ class DialogEditarPostulante(QDialog):
         layout.addLayout(form)
         layout.addSpacing(12)
 
-        # Carreras inscritas en la gestión (solo lectura)
-        if self.carreras_texto:
-            lbl_carr = QLabel("Carreras inscritas en esta gestión:")
+        if self.carreras:
+            lbl_carr = QLabel("Carreras de esta gestión (elija 1 o 2):")
             lbl_carr.setStyleSheet("font-size: 14px; font-weight: bold; color: #475569;")
             layout.addWidget(lbl_carr)
-            lbl_carr_val = QLabel(self.carreras_texto)
-            lbl_carr_val.setWordWrap(True)
-            lbl_carr_val.setStyleSheet(
-                "font-size: 13px; color: #0F2C59; background-color: #F1F5F9; "
-                "border: 1px solid #E2E8F0; border-radius: 6px; padding: 8px 10px;"
-            )
-            layout.addWidget(lbl_carr_val)
+            for carrera in self.carreras:
+                id_carrera = carrera.get("id_carrera")
+                check = QCheckBox(carrera.get("nombre", f"Carrera {id_carrera}"))
+                check.setChecked(id_carrera in self.carreras_seleccionadas_iniciales)
+                check.stateChanged.connect(self._limitar_carreras)
+                self.checks_carreras[id_carrera] = check
+                layout.addWidget(check)
             layout.addSpacing(12)
         
         # Biometric editing options
@@ -135,6 +137,23 @@ class DialogEditarPostulante(QDialog):
             "correo": self.txt_correo.text().strip() or None,
             "direccion": self.txt_direccion.text().strip() or None,
         }
+
+    def carreras_seleccionadas(self):
+        return [
+            id_carrera for id_carrera, check in self.checks_carreras.items()
+            if check.isChecked()
+        ]
+
+    def _limitar_carreras(self):
+        seleccionadas = self.carreras_seleccionadas()
+        if len(seleccionadas) > 2:
+            checkbox = self.sender()
+            checkbox.setChecked(False)
+            QMessageBox.warning(
+                self,
+                "Límite de carreras",
+                "Un postulante puede estar inscrito como máximo en 2 carreras por gestión.",
+            )
 
 
 class DialogNuevoPostulanteGestion(QDialog):

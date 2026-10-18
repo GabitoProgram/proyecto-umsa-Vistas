@@ -1,13 +1,38 @@
 import os
 
 import requests
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QFrame, QGraphicsDropShadowEffect, QSizePolicy, QSpacerItem
+from PySide6.QtCore import Qt, Signal, QPointF
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QLinearGradient,
+    QPainter,
+    QPalette,
+    QPixmap,
 )
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QSize
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QBrush, QPalette, QPixmap
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 from config.app_config import AppConfig
+
+
+def _fuente(px, peso=QFont.Bold, espaciado=0.0):
+    """QSS no soporta letter-spacing, por eso estas etiquetas se fijan por código."""
+    fuente = QFont()
+    fuente.setPixelSize(px)
+    fuente.setWeight(peso)
+    if espaciado:
+        fuente.setLetterSpacing(QFont.AbsoluteSpacing, espaciado)
+    return fuente
 
 
 class GradientPanel(QWidget):
@@ -20,94 +45,180 @@ class GradientPanel(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        gradient = QLinearGradient(0, 0, 0, self.height())
-        gradient.setColorAt(0.0, QColor("#0F2C59"))
-        gradient.setColorAt(0.5, QColor("#1A3F7A"))
-        gradient.setColorAt(1.0, QColor("#0B1D3A"))
+        w, h = self.width(), self.height()
+
+        gradient = QLinearGradient(0, 0, w, h)
+        gradient.setColorAt(0.0, QColor("#0B2248"))
+        gradient.setColorAt(0.55, QColor("#16407F"))
+        gradient.setColorAt(1.0, QColor("#0A1B3B"))
         painter.fillRect(self.rect(), QBrush(gradient))
+
+        # Círculos decorativos muy sutiles
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 12))
+        painter.drawEllipse(QPointF(w * 0.92, h * 0.10), 190, 190)
+        painter.setBrush(QColor(255, 255, 255, 9))
+        painter.drawEllipse(QPointF(w * 0.05, h * 0.95), 150, 150)
         painter.end()
 
 
 class LoginView(QWidget):
     login_exitoso = Signal(dict)
 
+    # Paleta:
+    #   Navy institucional : #0B2248 / #16407F
+    #   Primario (botón)   : #1E54B7  (hover #17449A, pressed #12367D)
+    #   Fondo derecho      : #EEF2F7
+    #   Texto principal    : #0F172A / secundario #64748B
+    ESTILOS = """
+        QWidget#loginRoot, QWidget#rightPanel { background: #EEF2F7; }
+
+        /* Evita que las etiquetas hereden fondos o bordes */
+        QLabel { background: transparent; border: none; }
+
+        /* ---------- PANEL IZQUIERDO ---------- */
+        QFrame#logoBadge { background: #FFFFFF; border: none; border-radius: 22px; }
+        QLabel#logoFallback { color: #0F2C59; font-size: 20px; font-weight: 800; }
+        QLabel#brandTitle   { color: #FFFFFF; font-size: 30px; font-weight: 800; }
+        QLabel#brandFaculty { color: #8DBDF2; }
+        QFrame#separator    { background: rgba(255, 255, 255, 0.14); border: none; }
+        QLabel#brandDesc    { color: rgba(255, 255, 255, 0.92); font-size: 18px; font-weight: 500; }
+        QLabel#featureCheck {
+            color: #7FE0BE; background: rgba(127, 224, 190, 0.16);
+            border-radius: 10px; font-size: 11px; font-weight: 800;
+        }
+        QLabel#featureText  { color: rgba(255, 255, 255, 0.82); font-size: 13px; }
+        QLabel#brandFooter  { color: rgba(255, 255, 255, 0.50); font-size: 11px; }
+
+        /* ---------- TARJETA ---------- */
+        QFrame#loginCard {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 18px;
+        }
+        QLabel#formEyebrow {
+            color: #1E54B7; background: #E8F0FD;
+            border-radius: 11px; padding: 5px 12px;
+        }
+        QLabel#formTitle { color: #0F172A; font-size: 26px; font-weight: 800; }
+        QLabel#formSub   { color: #64748B; font-size: 13px; }
+        QLabel#fieldLabel { color: #334155; font-size: 13px; font-weight: 600; }
+        QLabel#helpLabel  { color: #64748B; font-size: 11px; }
+
+        QLineEdit#loginInput {
+            padding: 10px 14px;
+            border: 1px solid #D5DEE9;
+            border-radius: 10px;
+            font-size: 14px;
+            color: #0F172A;
+            background: #F8FAFC;
+            selection-background-color: #BFD6F6;
+            selection-color: #0F172A;
+        }
+        QLineEdit#loginInput:hover { border: 1px solid #A9BBD1; }
+        QLineEdit#loginInput:focus {
+            padding: 9px 13px;
+            border: 2px solid #1E54B7;
+            background: #FFFFFF;
+        }
+
+        QLabel#errorLabel {
+            color: #B91C1C; background: #FEF2F2;
+            border: 1px solid #FECACA; border-radius: 8px;
+            font-size: 12px; font-weight: 600; padding: 8px 12px;
+        }
+
+        QPushButton#btnLogin {
+            background: #1E54B7; color: #FFFFFF;
+            border: none; border-radius: 10px;
+            padding: 12px 24px; font-size: 15px; font-weight: 700;
+        }
+        QPushButton#btnLogin:hover    { background: #17449A; }
+        QPushButton#btnLogin:pressed  { background: #12367D; }
+        QPushButton#btnLogin:disabled { background: #9DB8E3; color: #FFFFFF; }
+    """
+
     def __init__(self, parent=None, api_base_url=None):
         super().__init__(parent)
         self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.init_ui()
 
+    # ------------------------------------------------------------------
+    # Construcción de la interfaz
+    # ------------------------------------------------------------------
     def init_ui(self):
-        self.setStyleSheet("background-color: #F1F5F9;")
+        self.setObjectName("loginRoot")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(self.ESTILOS)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ═══════════════════════════════════════════════
-        # PANEL IZQUIERDO — Branding institucional
-        # ═══════════════════════════════════════════════
+        main_layout.addWidget(self._crear_panel_izquierdo(), 45)
+        main_layout.addWidget(self._crear_panel_derecho(), 55)
+
+    def limpiar_formulario(self):
+        self.txt_user.clear()
+        self.txt_pass.clear()
+        self.lbl_error.clear()
+        self.btn_ingresar.setText("Ingresar")
+        self.btn_ingresar.setEnabled(True)
+        self.txt_user.setFocus()
+
+    def _crear_panel_izquierdo(self):
         left_panel = GradientPanel()
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(48, 60, 48, 48)
+        left_layout.setContentsMargins(52, 56, 52, 44)
         left_layout.setSpacing(0)
 
-        # Emblema institucional; usa un texto de respaldo si aún no se copió la imagen.
-        lbl_icon = QLabel()
+        # Logo dentro de una insignia blanca (el JPG trae fondo blanco y
+        # se veía como un cuadro pegado sobre el gradiente).
+        badge = QFrame()
+        badge.setObjectName("logoBadge")
+        badge.setFixedSize(104, 104)
+        badge_layout = QVBoxLayout(badge)
+        badge_layout.setContentsMargins(12, 12, 12, 12)
+
+        lbl_logo = QLabel()
+        lbl_logo.setAlignment(Qt.AlignCenter)
         logo_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "assets", "umsa_logo.jpg"
         )
         logo = QPixmap(logo_path)
         if not logo.isNull():
-            lbl_icon.setPixmap(logo.scaled(116, 116, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        else:
-            lbl_icon.setText("UMSA")
-            lbl_icon.setStyleSheet(
-                "font-size: 30px; font-weight: 800; color: #FFFFFF; "
-                "background: transparent;"
+            lbl_logo.setPixmap(
+                logo.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             )
-        lbl_icon.setFixedHeight(116)
-        lbl_icon.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        left_layout.addWidget(lbl_icon)
-        left_layout.addSpacing(20)
+        else:
+            lbl_logo.setText("UMSA")
+            lbl_logo.setObjectName("logoFallback")
+        badge_layout.addWidget(lbl_logo)
+        left_layout.addWidget(badge, 0, Qt.AlignLeft)
+        left_layout.addSpacing(28)
 
-        # Título principal
         lbl_univ = QLabel("Universidad Mayor\nde San Andrés")
-        lbl_univ.setStyleSheet(
-            "font-size: 32px; font-weight: 800; color: #FFFFFF; "
-            "line-height: 1.2; background: transparent;"
-        )
+        lbl_univ.setObjectName("brandTitle")
         left_layout.addWidget(lbl_univ)
-        left_layout.addSpacing(8)
+        left_layout.addSpacing(10)
 
-        # Subtítulo facultad
         lbl_fac = QLabel("FACULTAD DE MEDICINA")
-        lbl_fac.setStyleSheet(
-            "font-size: 14px; font-weight: 700; color: #60A5FA; "
-            "letter-spacing: 3px; background: transparent;"
-        )
+        lbl_fac.setObjectName("brandFaculty")
+        lbl_fac.setFont(_fuente(13, QFont.Bold, 3))
         left_layout.addWidget(lbl_fac)
-        left_layout.addSpacing(32)
+        left_layout.addSpacing(28)
 
-        # Línea separadora
         separator = QFrame()
-        separator.setFixedHeight(2)
-        separator.setStyleSheet("background-color: rgba(255, 255, 255, 0.15); border: none;")
+        separator.setObjectName("separator")
+        separator.setFixedHeight(1)
         left_layout.addWidget(separator)
-        left_layout.addSpacing(32)
+        left_layout.addSpacing(28)
 
-        # Descripción del sistema
-        lbl_desc = QLabel(
-            "Sistema de Control de Acceso\n"
-            "y Verificación Biométrica"
-        )
-        lbl_desc.setStyleSheet(
-            "font-size: 18px; font-weight: 500; color: rgba(255, 255, 255, 0.85); "
-            "line-height: 1.5; background: transparent;"
-        )
+        lbl_desc = QLabel("Sistema de Control de Acceso\ny Verificación Biométrica")
+        lbl_desc.setObjectName("brandDesc")
         left_layout.addWidget(lbl_desc)
-        left_layout.addSpacing(24)
+        left_layout.addSpacing(22)
 
-        # Features del sistema
         features = [
             "Autenticación segura con roles",
             "Verificación facial en tiempo real",
@@ -115,214 +226,138 @@ class LoginView(QWidget):
             "Monitoreo y auditoría completa",
         ]
         for text in features:
-            feat_layout = QHBoxLayout()
-            lbl_feat_text = QLabel(text)
-            lbl_feat_text.setStyleSheet(
-                "font-size: 13px; color: rgba(255, 255, 255, 0.78); "
-                "padding-left: 4px; background: transparent;"
-            )
-            feat_layout.addWidget(lbl_feat_text)
-            feat_layout.addStretch()
-            left_layout.addLayout(feat_layout)
-            left_layout.addSpacing(6)
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            check = QLabel("✓")
+            check.setObjectName("featureCheck")
+            check.setFixedSize(20, 20)
+            check.setAlignment(Qt.AlignCenter)
+            label = QLabel(text)
+            label.setObjectName("featureText")
+            row.addWidget(check)
+            row.addWidget(label)
+            row.addStretch()
+            left_layout.addLayout(row)
+            left_layout.addSpacing(10)
 
         left_layout.addStretch()
 
-        # Pie del panel izquierdo
         lbl_footer = QLabel("© 2026 UMSA — Todos los derechos reservados")
-        lbl_footer.setStyleSheet(
-            "font-size: 11px; color: rgba(255, 255, 255, 0.35); background: transparent;"
-        )
+        lbl_footer.setObjectName("brandFooter")
         left_layout.addWidget(lbl_footer)
+        return left_panel
 
-        main_layout.addWidget(left_panel, 45)
-
-        # ═══════════════════════════════════════════════
-        # PANEL DERECHO — Formulario de login
-        # ═══════════════════════════════════════════════
+    def _crear_panel_derecho(self):
         right_panel = QWidget()
-        right_panel.setStyleSheet("background-color: #F1F5F9;")
+        right_panel.setObjectName("rightPanel")
+        right_panel.setAttribute(Qt.WA_StyledBackground, True)
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setContentsMargins(24, 24, 24, 24)
         right_layout.setAlignment(Qt.AlignCenter)
 
-        # Tarjeta de Login centrada con sombra
+        # Tarjeta: usa objectName para que su estilo NO se herede a las
+        # etiquetas internas (QLabel es subclase de QFrame).
         self.card = QFrame()
-        self.card.setFixedSize(440, 520)
-        self.card.setStyleSheet("""
-            QFrame {
-                background-color: #FFFFFF;
-                border: 1px solid #E2E8F0;
-                border-radius: 16px;
-            }
-        """)
+        self.card.setObjectName("loginCard")
+        self.card.setFixedWidth(440)
 
-        # Sombra elegante
         shadow = QGraphicsDropShadowEffect(self.card)
-        shadow.setBlurRadius(40)
+        shadow.setBlurRadius(48)
         shadow.setXOffset(0)
-        shadow.setYOffset(8)
-        shadow.setColor(QColor(15, 44, 89, 30))
+        shadow.setYOffset(10)
+        shadow.setColor(QColor(15, 44, 89, 40))
         self.card.setGraphicsEffect(shadow)
 
         card_layout = QVBoxLayout(self.card)
-        card_layout.setContentsMargins(44, 44, 44, 36)
+        card_layout.setContentsMargins(40, 40, 40, 32)
         card_layout.setSpacing(0)
 
-        # Identificador textual del formulario
-        lbl_form_icon = QLabel("ACCESO ADMINISTRATIVO")
-        lbl_form_icon.setStyleSheet(
-            "font-size: 11px; font-weight: 700; letter-spacing: 2px; "
-            "color: #2563EB; background: transparent;"
-        )
-        lbl_form_icon.setAlignment(Qt.AlignCenter)
-        card_layout.addWidget(lbl_form_icon)
-        card_layout.addSpacing(16)
+        lbl_eyebrow = QLabel("ACCESO ADMINISTRATIVO")
+        lbl_eyebrow.setObjectName("formEyebrow")
+        lbl_eyebrow.setFont(_fuente(11, QFont.Bold, 1.5))
+        card_layout.addWidget(lbl_eyebrow, 0, Qt.AlignHCenter)
+        card_layout.addSpacing(18)
 
-        # Título
         lbl_titulo = QLabel("Iniciar Sesión")
-        lbl_titulo.setStyleSheet(
-            "font-size: 26px; font-weight: 800; color: #0F172A; background: transparent;"
-        )
+        lbl_titulo.setObjectName("formTitle")
         lbl_titulo.setAlignment(Qt.AlignCenter)
         card_layout.addWidget(lbl_titulo)
         card_layout.addSpacing(6)
 
-        # Subtítulo
         lbl_sub = QLabel("Ingrese sus credenciales para acceder al panel")
-        lbl_sub.setStyleSheet(
-            "font-size: 13px; color: #94A3B8; background: transparent;"
-        )
+        lbl_sub.setObjectName("formSub")
         lbl_sub.setAlignment(Qt.AlignCenter)
         card_layout.addWidget(lbl_sub)
         card_layout.addSpacing(28)
 
-        # ——— Campo: Usuario ———
+        # Usuario
         lbl_user = QLabel("Usuario")
-        lbl_user.setStyleSheet(
-            "font-size: 13px; font-weight: 600; color: #374151; "
-            "margin-bottom: 4px; background: transparent;"
-        )
+        lbl_user.setObjectName("fieldLabel")
         card_layout.addWidget(lbl_user)
-        card_layout.addSpacing(4)
-
-        self.txt_user = QLineEdit()
-        self.txt_user.setPlaceholderText("Ingrese su nombre de usuario")
-        self.txt_user.setMinimumHeight(44)
-        self.txt_user.setStyleSheet("""
-            QLineEdit {
-                padding: 10px 14px;
-                border: 1.5px solid #E2E8F0;
-                border-radius: 10px;
-                font-size: 14px;
-                color: #1E293B;
-                background-color: #F8FAFC;
-            }
-            QLineEdit:focus {
-                border: 2px solid #2563EB;
-                background-color: #FFFFFF;
-            }
-            QLineEdit::placeholder {
-                color: #CBD5E1;
-            }
-        """)
+        card_layout.addSpacing(6)
+        self.txt_user = self._crear_campo("Ingrese su nombre de usuario")
         card_layout.addWidget(self.txt_user)
         card_layout.addSpacing(16)
 
-        # ——— Campo: Contraseña ———
+        # Contraseña
         lbl_pass = QLabel("Contraseña")
-        lbl_pass.setStyleSheet(
-            "font-size: 13px; font-weight: 600; color: #374151; "
-            "margin-bottom: 4px; background: transparent;"
-        )
+        lbl_pass.setObjectName("fieldLabel")
         card_layout.addWidget(lbl_pass)
-        card_layout.addSpacing(4)
-
-        self.txt_pass = QLineEdit()
-        self.txt_pass.setEchoMode(QLineEdit.Password)
-        self.txt_pass.setPlaceholderText("Ingrese su contraseña")
-        self.txt_pass.setMinimumHeight(44)
-        self.txt_pass.setStyleSheet("""
-            QLineEdit {
-                padding: 10px 14px;
-                border: 1.5px solid #E2E8F0;
-                border-radius: 10px;
-                font-size: 14px;
-                color: #1E293B;
-                background-color: #F8FAFC;
-            }
-            QLineEdit:focus {
-                border: 2px solid #2563EB;
-                background-color: #FFFFFF;
-            }
-            QLineEdit::placeholder {
-                color: #CBD5E1;
-            }
-        """)
-        self.txt_pass.returnPressed.connect(self.procesar_login)
+        card_layout.addSpacing(6)
+        self.txt_pass = self._crear_campo("Ingrese su contraseña", password=True)
         card_layout.addWidget(self.txt_pass)
-        card_layout.addSpacing(10)
+        card_layout.addSpacing(12)
 
-        # ——— Mensaje de error ———
+        self.txt_user.returnPressed.connect(self.txt_pass.setFocus)
+        self.txt_pass.returnPressed.connect(self.procesar_login)
+
+        # Error
         self.lbl_error = QLabel("")
-        self.lbl_error.setStyleSheet("""
-            QLabel {
-                color: #DC2626;
-                font-size: 12px;
-                font-weight: 600;
-                background-color: #FEF2F2;
-                border: 1px solid #FECACA;
-                border-radius: 8px;
-                padding: 8px 12px;
-            }
-        """)
+        self.lbl_error.setObjectName("errorLabel")
         self.lbl_error.setAlignment(Qt.AlignCenter)
+        self.lbl_error.setWordWrap(True)
         self.lbl_error.setVisible(False)
         card_layout.addWidget(self.lbl_error)
-        card_layout.addSpacing(10)
+        card_layout.addSpacing(12)
 
-        # ——— Botón Ingresar ———
+        # Botón
         self.btn_ingresar = QPushButton("Ingresar")
+        self.btn_ingresar.setObjectName("btnLogin")
         self.btn_ingresar.setMinimumHeight(48)
         self.btn_ingresar.setCursor(Qt.PointingHandCursor)
-        self.btn_ingresar.setStyleSheet("""
-            QPushButton {
-                background-color: #2563EB;
-                color: #FFFFFF;
-                padding: 12px 24px;
-                font-weight: 700;
-                border-radius: 10px;
-                font-size: 15px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: #1D4ED8;
-            }
-            QPushButton:pressed {
-                background-color: #1E40AF;
-            }
-            QPushButton:disabled {
-                background-color: #93C5FD;
-                color: rgba(255, 255, 255, 0.8);
-            }
-        """)
         self.btn_ingresar.clicked.connect(self.procesar_login)
         card_layout.addWidget(self.btn_ingresar)
         card_layout.addSpacing(20)
 
-        # ——— Pie de la tarjeta ———
         lbl_help = QLabel("¿Problemas para acceder? Contacte al administrador.")
-        lbl_help.setStyleSheet(
-            "font-size: 11px; color: #94A3B8; background: transparent;"
-        )
+        lbl_help.setObjectName("helpLabel")
         lbl_help.setAlignment(Qt.AlignCenter)
         lbl_help.setWordWrap(True)
         card_layout.addWidget(lbl_help)
 
         right_layout.addWidget(self.card)
+        return right_panel
 
-        main_layout.addWidget(right_panel, 55)
+    def _crear_campo(self, placeholder, password=False):
+        campo = QLineEdit()
+        campo.setObjectName("loginInput")
+        campo.setPlaceholderText(placeholder)
+        campo.setMinimumHeight(46)
+        if password:
+            campo.setEchoMode(QLineEdit.Password)
+        # QSS no soporta ::placeholder; el color se define con la paleta.
+        paleta = campo.palette()
+        paleta.setColor(QPalette.PlaceholderText, QColor("#94A3B8"))
+        campo.setPalette(paleta)
+        return campo
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.txt_user.setFocus()
+
+    # ------------------------------------------------------------------
+    # Lógica
+    # ------------------------------------------------------------------
     def procesar_login(self):
         username = self.txt_user.text().strip()
         password = self.txt_pass.text()
@@ -334,23 +369,30 @@ class LoginView(QWidget):
         self.btn_ingresar.setEnabled(False)
         self.btn_ingresar.setText("Verificando...")
         self.lbl_error.setVisible(False)
+        QApplication.processEvents()  # repinta el botón antes de la petición
 
         try:
             # Login OAuth2 estándar compatible con FastAPI form-data
             res = requests.post(
                 f"{self.api_base_url}/auth/login",
                 data={"username": username, "password": password},
-                timeout=4
+                timeout=4,
             )
             if res.status_code == 200:
                 data = res.json()
                 self.login_exitoso.emit(data)
             elif res.status_code == 401:
                 self.mostrar_error("Las credenciales ingresadas son incorrectas.")
+                self.txt_pass.clear()
+                self.txt_pass.setFocus()
             else:
-                self.mostrar_error(f"Error del servidor ({res.status_code}). Intente más tarde.")
+                self.mostrar_error(
+                    f"Error del servidor ({res.status_code}). Intente más tarde."
+                )
         except requests.exceptions.ConnectionError:
-            self.mostrar_error("No se pudo conectar con el servidor. Verifique la conexión.")
+            self.mostrar_error(
+                "No se pudo conectar con el servidor. Verifique la conexión."
+            )
         except Exception as e:
             self.mostrar_error(f"Error inesperado: {str(e)}")
         finally:

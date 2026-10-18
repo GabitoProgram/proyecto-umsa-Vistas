@@ -16,6 +16,11 @@ class CheckInView(MarcacionMixin, ReconocimientoMixin, ContadorMixin, QWidget):
         super().__init__(parent)
         self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.info_examen = {}
+        self._huellas_examen_cache = None
+        self._estacion_activa = False
+        self._inicio_lector_timer = QTimer(self)
+        self._inicio_lector_timer.setSingleShot(True)
+        self._inicio_lector_timer.timeout.connect(self.identificar_huella)
 
         self.init_ui()
 

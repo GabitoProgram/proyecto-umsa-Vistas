@@ -3,6 +3,7 @@ from PySide6.QtWidgets import QStackedWidget, QMainWindow, QMessageBox
 from PySide6.QtCore import QTimer
 
 from config.app_config import AppConfig
+from api.client import api
 from views.checkin_view import CheckInView
 from views.login_view import LoginView
 from views.main_window import MainDashboardWindow
@@ -88,10 +89,19 @@ class AppController(QMainWindow):
                 token_data=token_data,
                 api_base_url=self.api_base_url,
             )
-            self.admin_window.volver_a_checkin.connect(self.retornar_a_checkin_desde_admin)
+            self.admin_window.cerrar_sesion.connect(self.cerrar_sesion)
         self.admin_window.show()
         self.hide()
 
-    def retornar_a_checkin_desde_admin(self):
+    def cerrar_sesion(self):
+        admin_window = self.admin_window
+        self.admin_window = None
+        if admin_window:
+            admin_window.close()
+            admin_window.deleteLater()
+
+        api.jwt_token = None
+        api.current_user = None
+        self.login_view.limpiar_formulario()
         self.show()
         self.evaluar_examen_activo()

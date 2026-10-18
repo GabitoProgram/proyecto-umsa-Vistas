@@ -1,21 +1,27 @@
+import unicodedata
+
 import requests
-from datetime import date
+from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, QThreadPool, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QStackedWidget, QFrame, QComboBox, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QInputDialog, QLineEdit, QFileDialog, QDialog, QFormLayout, QCheckBox, QScrollArea
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QImage, QPixmap
-import cv2
+from shiboken6 import isValid
 
 from desktop.views.dialogs.postulante_dialog import (
     DialogEditarPostulante,
     DialogNuevoPostulanteGestion,
 )
-from desktop.views.dialogs.gestion_dialog import DialogGestion
-from desktop.views.dialogs.carrera_dialog import DialogCarrera
-from desktop.views.dialogs.examen_dialog import DialogExamen
-from desktop.views.dialogs.captura_rostro_dialog import DialogCapturaRostro
-from desktop.views.admin.examen_workspace_view import ExamenWorkspaceView
 
 
 # Formatos que admite la carga masiva.
@@ -39,6 +45,67 @@ def _tipo_mime(nombre):
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+def _normalizar(texto):
+    """Minúsculas y sin tildes, para buscar sin importar acentos."""
+    texto = unicodedata.normalize("NFD", str(texto).lower())
+    return "".join(c for c in texto if unicodedata.category(c) != "Mn")
+
+
+def _fuente_marca(px, espaciado):
+    """QSS no soporta letter-spacing; se define por código."""
+    fuente = QFont()
+    fuente.setPixelSize(px)
+    fuente.setWeight(QFont.Bold)
+    fuente.setLetterSpacing(QFont.AbsoluteSpacing, espaciado)
+    return fuente
+
+
+def _nombre_postulante(postulante):
+    nombre = str(postulante.get("nombre_completo") or "").strip()
+    if not nombre:
+        nombre = f"{postulante.get('nombres', '')} {postulante.get('apellidos', '')}".strip()
+    return nombre or "Sin nombre"
+
+
+def _iniciales(nombre):
+    partes = nombre.split()
+    return "".join(p[0] for p in partes[:2]).upper() or "?"
+
+
+def _pixmap_redondeado(pixmap, ancho, alto, radio):
+    """Recorta la imagen al centro con esquinas redondeadas."""
+    escalado = pixmap.scaled(
+        ancho, alto, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+    )
+    salida = QPixmap(ancho, alto)
+    salida.fill(Qt.transparent)
+    pintor = QPainter(salida)
+    pintor.setRenderHint(QPainter.Antialiasing)
+    pintor.setRenderHint(QPainter.SmoothPixmapTransform)
+    ruta = QPainterPath()
+    ruta.addRoundedRect(QRectF(0, 0, ancho, alto), radio, radio)
+    pintor.setClipPath(ruta)
+    pintor.drawPixmap(
+        (ancho - escalado.width()) // 2, (alto - escalado.height()) // 2, escalado
+    )
+    pintor.end()
+    return salida
+
+
+# Colores suaves para el avatar cuando no hay foto: (fondo, texto)
+_COLORES_AVATAR = (
+    ("#DBEAFE", "#1E40AF"),
+    ("#DCFCE7", "#166534"),
+    ("#FEF3C7", "#92400E"),
+    ("#EDE9FE", "#5B21B6"),
+    ("#FCE7F3", "#9D174D"),
+    ("#E0F2FE", "#075985"),
+)
+
+
+# ======================================================================
+# Importación de archivos
+# ======================================================================
 class BotonImportarExcel(QPushButton):
     """Botón de importación que además acepta arrastrar el archivo encima."""
 
@@ -67,46 +134,97 @@ class BotonImportarExcel(QPushButton):
             self.archivo_recibido.emit(ruta)
 
 
-class ZonaCargaExcel(QFrame):
-    """Zona grande y visible para arrastrar el archivo de carga masiva.
+def _icono_subir(fondo, trazo, lado=44):
+    """Ícono de subida dibujado en código (flecha sobre una bandeja)."""
+    pm = QPixmap(lado * 2, lado * 2)
+    pm.setDevicePixelRatio(2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(fondo))
+    p.drawRoundedRect(QRectF(0, 0, lado, lado), 12, 12)
 
-    El botón es chico y es fácil no darle: esto agranda el objetivo y deja
-    claro qué se espera soltar. También responde al clic.
-    """
+    p.setPen(QPen(QColor(trazo), 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(Qt.NoBrush)
+    c = lado / 2
+    p.drawLine(QPointF(c, 27), QPointF(c, 13))
+    flecha = QPainterPath()
+    flecha.moveTo(c - 6, 19)
+    flecha.lineTo(c, 13)
+    flecha.lineTo(c + 6, 19)
+    p.drawPath(flecha)
+    bandeja = QPainterPath()
+    bandeja.moveTo(12, 26)
+    bandeja.lineTo(12, 32)
+    bandeja.lineTo(lado - 12, 32)
+    bandeja.lineTo(lado - 12, 26)
+    p.drawPath(bandeja)
+    p.end()
+    return pm
+
+
+class ZonaCargaExcel(QFrame):
+    """Zona para arrastrar el archivo de carga masiva (también responde al clic)."""
 
     archivo_recibido = Signal(str)
     seleccionar_archivo = Signal()
 
+    ESTILOS = """
+        QFrame#zonaCarga {
+            background: #F8FAFC;
+            border: 2px dashed #B6C3D4;
+            border-radius: 12px;
+        }
+        QFrame#zonaCarga:hover {
+            background: #F0F6FF;
+            border: 2px dashed #2F6FED;
+        }
+        QFrame#zonaCarga[arrastrando="true"] {
+            background: #ECFDF3;
+            border: 2px dashed #16A34A;
+        }
+        QLabel#zonaTitulo { color: #1E293B; font-size: 14px; font-weight: 700;
+                            background: transparent; border: none; }
+        QLabel#zonaSub    { color: #64748B; font-size: 12px;
+                            background: transparent; border: none; }
+    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("zonaCarga")
         self.setAcceptDrops(True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(84)
+        self.setFixedHeight(72)
+        self.setStyleSheet(self.ESTILOS)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 10, 16, 10)
-        texto = QLabel(
-            "📥 <b>Arrastra aquí tu archivo de postulantes</b><br>"
-            "<span style='font-size:12px; color:#64748B'>"
-            "formatos .xlsx, .xls o .csv — o haz clic para buscarlo</span>"
-        )
-        texto.setAlignment(Qt.AlignCenter)
-        texto.setTextFormat(Qt.RichText)
-        texto.setWordWrap(True)
-        texto.setStyleSheet("background: transparent; border: none;")
-        layout.addWidget(texto)
+        fila = QHBoxLayout(self)
+        fila.setContentsMargins(16, 10, 16, 10)
+        fila.setSpacing(14)
+
+        self.icono = QLabel()
+        self.icono.setFixedSize(44, 44)
+        fila.addWidget(self.icono)
+
+        textos = QVBoxLayout()
+        textos.setSpacing(2)
+        titulo = QLabel("Arrastra aquí tu archivo de postulantes")
+        titulo.setObjectName("zonaTitulo")
+        sub = QLabel("Formatos .xlsx, .xls o .csv. También puedes hacer clic para buscarlo.")
+        sub.setObjectName("zonaSub")
+        textos.addWidget(titulo)
+        textos.addWidget(sub)
+        fila.addLayout(textos, 1)
         self._pintar(encima=False)
 
     def _pintar(self, encima):
-        color_borde = "#16A34A" if encima else "#94A3B8"
-        color_fondo = "#DCFCE7" if encima else "#F8FAFC"
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: {color_fondo};
-                border: 2px dashed {color_borde};
-                border-radius: 10px;
-            }}
-        """)
+        self.setProperty("arrastrando", bool(encima))
+        self.style().unpolish(self)
+        self.style().polish(self)
+        if encima:
+            self.icono.setPixmap(_icono_subir("#D1F2DD", "#15803D"))
+        else:
+            self.icono.setPixmap(_icono_subir("#E0EAFB", "#2F6FED"))
 
     def mousePressEvent(self, evento):
         if evento.button() == Qt.LeftButton:
@@ -136,95 +254,464 @@ class ZonaCargaExcel(QFrame):
             self.archivo_recibido.emit(ruta)
 
 
+# ======================================================================
+# Carnet de postulante
+# ======================================================================
+class CarnetPostulante(QFrame):
+    """Tarjeta tipo carnet con foto, datos y acciones del postulante.
+
+    Los botones quedan expuestos (``btn_rostro``, ``btn_huella``,
+    ``btn_editar``) para que el mixin conecte las acciones.
+    Los estilos están definidos en el stylesheet de la vista académica.
+    """
+
+    seleccionado = Signal(object)
+    editar_solicitado = Signal(object)
+
+    FOTO_ANCHO = 76
+    FOTO_ALTO = 92
+
+    def __init__(self, postulante, tiene_rostro, rostro_registrado, cant_huellas, parent=None):
+        super().__init__(parent)
+        self.setObjectName("carnet")
+        self.setProperty("seleccionado", False)
+        self.postulante = postulante
+        self.setMinimumWidth(330)
+        self.setFixedHeight(236)
+
+        raiz = QVBoxLayout(self)
+        raiz.setContentsMargins(0, 0, 0, 0)
+        raiz.setSpacing(0)
+
+        completo = bool(tiene_rostro) and cant_huellas > 0
+        raiz.addWidget(self._crear_cabecera(completo))
+        raiz.addLayout(self._crear_cuerpo(), 1)
+        raiz.addWidget(self._crear_pie(tiene_rostro, rostro_registrado, cant_huellas))
+
+    # -- Construcción -----------------------------------------------------
+    def _crear_cabecera(self, completo):
+        cabecera = QFrame()
+        cabecera.setObjectName("carnetCabecera")
+        cabecera.setFixedHeight(40)
+        fila = QHBoxLayout(cabecera)
+        fila.setContentsMargins(14, 0, 12, 0)
+
+        marca = QLabel("UMSA  ·  MEDICINA")
+        marca.setObjectName("carnetMarca")
+        marca.setFont(_fuente_marca(10, 1.6))
+        estado = QLabel("Biometría completa" if completo else "Biometría pendiente")
+        estado.setObjectName("pillOk" if completo else "pillPendiente")
+
+        fila.addWidget(marca, 0, Qt.AlignVCenter)
+        fila.addStretch()
+        fila.addWidget(estado, 0, Qt.AlignVCenter)
+        return cabecera
+
+    def _crear_cuerpo(self):
+        fila = QHBoxLayout()
+        fila.setContentsMargins(14, 12, 14, 10)
+        fila.setSpacing(14)
+
+        self.foto = QLabel()
+        self.foto.setFixedSize(self.FOTO_ANCHO, self.FOTO_ALTO)
+        self.foto.setAlignment(Qt.AlignCenter)
+        self._foto_placeholder()
+        fila.addWidget(self.foto, 0, Qt.AlignTop)
+
+        columna = QVBoxLayout()
+        columna.setSpacing(4)
+
+        nombre = _nombre_postulante(self.postulante)
+        lbl_nombre = QLabel(nombre if len(nombre) <= 36 else f"{nombre[:35]}…")
+        lbl_nombre.setObjectName("carnetNombre")
+        lbl_nombre.setWordWrap(True)
+        lbl_nombre.setToolTip(nombre)
+        columna.addWidget(lbl_nombre)
+
+        lbl_ci = QLabel(f"C.I. {self.postulante.get('ci', '')}")
+        lbl_ci.setObjectName("carnetCI")
+        columna.addWidget(lbl_ci)
+        columna.addSpacing(4)
+
+        carreras = [
+            c.get("nombre", "")
+            for c in (self.postulante.get("carreras") or [])
+            if c.get("nombre")
+        ]
+        if carreras:
+            for nombre_carrera in carreras[:2]:
+                columna.addLayout(self._crear_chip(
+                    nombre_carrera if len(nombre_carrera) <= 24 else f"{nombre_carrera[:23]}…",
+                    "carreraChip",
+                    ", ".join(carreras),
+                ))
+            if len(carreras) > 2:
+                columna.addLayout(self._crear_chip(
+                    f"+{len(carreras) - 2} más", "carreraChip", ", ".join(carreras)
+                ))
+        else:
+            columna.addLayout(self._crear_chip("Sin carreras", "carreraChipVacio", ""))
+
+        columna.addStretch()
+        fila.addLayout(columna, 1)
+        return fila
+
+    @staticmethod
+    def _crear_chip(texto, objeto, tooltip):
+        fila = QHBoxLayout()
+        fila.setContentsMargins(0, 0, 0, 0)
+        chip = QLabel(texto)
+        chip.setObjectName(objeto)
+        if tooltip:
+            chip.setToolTip(tooltip)
+        fila.addWidget(chip)
+        fila.addStretch()
+        return fila
+
+    @staticmethod
+    def _crear_boton(texto, tono, tooltip=""):
+        boton = QPushButton(texto)
+        boton.setProperty("tono", tono)
+        boton.setCursor(Qt.PointingHandCursor)
+        boton.setFocusPolicy(Qt.NoFocus)
+        boton.setFixedHeight(32)
+        if tooltip:
+            boton.setToolTip(tooltip)
+        return boton
+
+    def _crear_pie(self, tiene_rostro, rostro_registrado, cant_huellas):
+        pie = QFrame()
+        pie.setObjectName("carnetPie")
+        pie.setFixedHeight(52)
+        fila = QHBoxLayout(pie)
+        fila.setContentsMargins(12, 8, 12, 10)
+        fila.setSpacing(8)
+
+        # 3 estados: sin rostro (neutro), registrado sin habilitar (ámbar), habilitado (verde)
+        if tiene_rostro:
+            self.btn_rostro = self._crear_boton(
+                "Habilitado", "exito", "Rostro habilitado. Clic para deshabilitar."
+            )
+        elif rostro_registrado:
+            self.btn_rostro = self._crear_boton(
+                "Por habilitar", "aviso",
+                "Rostro registrado, pendiente de habilitación. Clic para habilitar.",
+            )
+        else:
+            self.btn_rostro = self._crear_boton("Rostro", "neutro", "Registrar rostro")
+
+        if cant_huellas > 0:
+            self.btn_huella = self._crear_boton(
+                f"Huella ({cant_huellas})", "exito", "Gestionar huellas registradas"
+            )
+        else:
+            self.btn_huella = self._crear_boton("Huella", "neutro", "Registrar huella")
+
+        self.btn_editar = self._crear_boton("Editar", "info", "Editar datos del postulante")
+
+        fila.addWidget(self.btn_rostro, 1)
+        fila.addWidget(self.btn_huella, 1)
+        fila.addWidget(self.btn_editar, 1)
+        return pie
+
+    # -- Foto -------------------------------------------------------------
+    def _foto_placeholder(self):
+        nombre = _nombre_postulante(self.postulante)
+        indice = sum(ord(c) for c in str(self.postulante.get("ci", nombre))) % len(_COLORES_AVATAR)
+        fondo, texto = _COLORES_AVATAR[indice]
+        self.foto.setText(_iniciales(nombre))
+        self.foto.setToolTip("Sin foto registrada")
+        self.foto.setStyleSheet(
+            f"background: {fondo}; color: {texto}; border-radius: 12px;"
+            "font-size: 24px; font-weight: 800;"
+        )
+
+    def poner_foto(self, datos):
+        imagen = QImage()
+        if not imagen.loadFromData(datos):
+            return
+        pixmap = QPixmap.fromImage(imagen)
+        self.foto.setText("")
+        self.foto.setPixmap(
+            _pixmap_redondeado(pixmap, self.FOTO_ANCHO - 4, self.FOTO_ALTO - 4, 10)
+        )
+        self.foto.setStyleSheet(
+            "background: transparent; border: 2px solid #60A5FA; border-radius: 12px;"
+        )
+        self.foto.setToolTip("Rostro registrado")
+
+    # -- Selección --------------------------------------------------------
+    def set_seleccionado(self, valor):
+        self.setProperty("seleccionado", bool(valor))
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def mousePressEvent(self, evento):
+        self.seleccionado.emit(self)
+        super().mousePressEvent(evento)
+
+    def mouseDoubleClickEvent(self, evento):
+        self.editar_solicitado.emit(self.postulante)
+        super().mouseDoubleClickEvent(evento)
+
+
+class ContenedorCarnets(QScrollArea):
+    """Rejilla de carnets que reacomoda sus columnas según el ancho."""
+
+    ANCHO_MIN = 330
+    ESPACIO = 16
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.viewport().setAutoFillBackground(False)
+
+        self._contenido = QWidget()
+        self._contenido.setObjectName("carnetsContenido")
+        self._grid = QGridLayout(self._contenido)
+        self._grid.setContentsMargins(4, 4, 4, 12)
+        self._grid.setSpacing(self.ESPACIO)
+        self.setWidget(self._contenido)
+
+        self._todos = []
+        self._visibles = []
+        self._mensaje = ""
+        self._columnas = 0
+        self._max_columnas = 0
+        self._ultima_fila = 0
+
+        self._vacio = QLabel("", self._contenido)
+        self._vacio.setObjectName("estadoVacio")
+        self._vacio.setAlignment(Qt.AlignCenter)
+        self._vacio.setWordWrap(True)
+        self._vacio.hide()
+
+    def establecer(self, widgets):
+        """Reemplaza todos los carnets. Después hay que llamar a ``mostrar``."""
+        for widget in self._todos:
+            self._grid.removeWidget(widget)
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
+        self._todos = list(widgets)
+        for widget in self._todos:
+            widget.setParent(self._contenido)
+
+    def mostrar(self, visibles, mensaje_vacio=""):
+        self._visibles = list(visibles)
+        self._mensaje = mensaje_vacio
+        self._reacomodar()
+
+    def _columnas_actuales(self):
+        # Se reserva el espacio de la barra de scroll para evitar saltos.
+        ancho = self.width() - 26
+        return max(1, (ancho + self.ESPACIO) // (self.ANCHO_MIN + self.ESPACIO))
+
+    def _reacomodar(self):
+        while self._grid.count():
+            self._grid.takeAt(0)
+
+        columnas = self._columnas = self._columnas_actuales()
+        visibles = set(self._visibles)
+        for widget in self._todos:
+            if widget not in visibles:
+                widget.hide()
+
+        fila = columna = 0
+        for widget in self._visibles:
+            self._grid.addWidget(widget, fila, columna)
+            widget.show()
+            columna += 1
+            if columna >= columnas:
+                columna = 0
+                fila += 1
+
+        if self._visibles:
+            self._vacio.hide()
+            fila_final = fila + (1 if columna else 0)
+        else:
+            self._vacio.setText(self._mensaje)
+            self._grid.addWidget(self._vacio, 0, 0, 1, columnas)
+            self._vacio.show()
+            fila_final = 1
+
+        for c in range(max(self._max_columnas, columnas)):
+            self._grid.setColumnStretch(c, 1 if c < columnas else 0)
+        self._max_columnas = max(self._max_columnas, columnas)
+
+        self._grid.setRowStretch(self._ultima_fila, 0)
+        self._grid.setRowStretch(fila_final, 1)
+        self._ultima_fila = fila_final
+
+    def resizeEvent(self, evento):
+        super().resizeEvent(evento)
+        if self._columnas_actuales() != self._columnas:
+            self._reacomodar()
+
+
+# ======================================================================
+# Carga de fotos en segundo plano
+# ======================================================================
+class _EmisorFotos(QObject):
+    listo = Signal(int, object, object)  # generación, id_postulante, bytes
+
+
+class _TareaFoto(QRunnable):
+    def __init__(self, emisor, generacion, id_postulante, url, headers):
+        super().__init__()
+        self._emisor = emisor
+        self._generacion = generacion
+        self._id = id_postulante
+        self._url = url
+        self._headers = headers
+
+    def run(self):
+        try:
+            respuesta = requests.get(self._url, headers=self._headers, timeout=4)
+        except requests.RequestException:
+            return
+        if respuesta.status_code == 200 and respuesta.content:
+            self._emisor.listo.emit(self._generacion, self._id, respuesta.content)
+
+
+# ======================================================================
+# Mixin
+# ======================================================================
 class PostulantesMixin:
+    # -- Fotos ------------------------------------------------------------
+    def _asegurar_emisor_fotos(self):
+        if getattr(self, "_emisor_fotos", None) is None:
+            self._emisor_fotos = _EmisorFotos()
+            self._emisor_fotos.listo.connect(self._foto_recibida)
+            self._pool_fotos = QThreadPool()
+            self._pool_fotos.setMaxThreadCount(4)
+            self._generacion_fotos = 0
+            self._carnets_por_id = {}
+            self._carnets_postulantes = []
+            self._carnet_seleccionado = None
+
+    def _foto_recibida(self, generacion, id_postulante, datos):
+        if generacion != self._generacion_fotos:
+            return
+        carnet = self._carnets_por_id.get(id_postulante)
+        if carnet is not None and isValid(carnet):
+            carnet.poner_foto(datos)
+
+    # -- Lista de postulantes ---------------------------------------------
     def abrir_postulantes_gestion(self):
+        self._asegurar_emisor_fotos()
         datos = self._obtener_lista(f"/inscripciones/gestion/{self.gestion_nav_id}/postulantes")
         todos = {str(p.get("ci")): p for p in self._obtener_lista("/postulantes?limit=1000")}
-        
+
         self.postulantes_nav_title.setText("Postulantes inscritos en la gestión")
-        self.postulantes_nav_table.setRowCount(len(datos))
-        for fila, postulante in enumerate(datos):
+
+        self._generacion_fotos += 1
+        generacion = self._generacion_fotos
+        self._carnet_seleccionado = None
+        self._carnets_por_id = {}
+        self._carnets_postulantes = []
+
+        for postulante in datos:
             ci = str(postulante.get("ci", ""))
             full_p = todos.get(ci, {})
             # Actualizamos el postulante con su info completa (importante para editar y registrar)
             postulante.update(full_p)
-            
-            self.postulantes_nav_table.setItem(fila, 0, QTableWidgetItem(ci))
-            self.postulantes_nav_table.setItem(fila, 1, QTableWidgetItem(str(postulante.get("nombre_completo", ""))))
-            carreras_lista = [c.get("nombre", "") for c in postulante.get("carreras", []) if c.get("nombre")]
-            if carreras_lista:
-                item_carreras = QTableWidgetItem(
-                    f"{len(carreras_lista)} carrera(s): {', '.join(carreras_lista)}"
-                )
-                if len(carreras_lista) >= 2:
-                    item_carreras.setForeground(Qt.darkGreen)
-                item_carreras.setToolTip(", ".join(carreras_lista))
-            else:
-                item_carreras = QTableWidgetItem("Sin carreras")
-                item_carreras.setForeground(Qt.darkGray)
-            self.postulantes_nav_table.setItem(fila, 2, item_carreras)
-            
+
+            carnet = self._crear_carnet(postulante, full_p)
+            busqueda = _normalizar(" ".join(
+                str(postulante.get(campo, ""))
+                for campo in ("ci", "nombre_completo", "nombres", "apellidos")
+            ))
+            self._carnets_postulantes.append((carnet, postulante, busqueda))
+
+            id_postulante = postulante.get("id_postulante")
             tiene_rostro = full_p.get("tiene_rostro", False)
-            rostro_registrado = full_p.get("rostro_registrado", tiene_rostro)
-            id_rostro = full_p.get("id_rostro")
-            cant_huellas = full_p.get("cantidad_huellas", 0)
-            
-            # Action buttons
-            acciones = QWidget()
-            acciones_layout = QHBoxLayout(acciones)
-            acciones_layout.setContentsMargins(2, 2, 2, 2)
-            acciones_layout.setSpacing(4)
-            
-            # 3 estados: sin rostro (gris), registrado sin habilitar (amarillo), habilitado (verde)
-            if tiene_rostro:
-                btn_rostro = QPushButton("Habilitado")
-                btn_rostro.setStyleSheet("background-color: #16A34A; color: white; border: none; padding: 4px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;")
-                btn_rostro.setCursor(Qt.PointingHandCursor)
-                btn_rostro.setToolTip("Rostro habilitado. Clic para deshabilitar.")
-                btn_rostro.clicked.connect(lambda _, p=postulante, r=id_rostro: self.cambiar_estado_rostro_gestion(p, r, False))
-            elif rostro_registrado:
-                btn_rostro = QPushButton("Por habilitar")
-                btn_rostro.setStyleSheet("background-color: #FACC15; color: #713F12; border: 1px solid #EAB308; padding: 4px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;")
-                btn_rostro.setCursor(Qt.PointingHandCursor)
-                btn_rostro.setToolTip("Rostro registrado, pendiente de habilitación. Clic para habilitar.")
-                btn_rostro.clicked.connect(lambda _, p=postulante, r=id_rostro: self.cambiar_estado_rostro_gestion(p, r, True))
-            else:
-                btn_rostro = QPushButton("Rostro")
-                btn_rostro.setStyleSheet("background-color: #F1F5F9; color: #334155; border: 1px solid #CBD5E1; padding: 4px 6px; border-radius: 4px; font-size: 11px;")
-                btn_rostro.setCursor(Qt.PointingHandCursor)
-                btn_rostro.clicked.connect(lambda _, p=postulante, btn=btn_rostro: self.registrar_rostro_gestion(p, btn))
-            
-            btn_rostro.setMinimumSize(75, 32)
-            btn_rostro.setMaximumHeight(36)
-            
-            h_text = f"({cant_huellas})" if cant_huellas > 0 else "Huella"
-            btn_huella = QPushButton(h_text if cant_huellas == 0 else f"Huella {h_text}")
-            btn_huella.setMinimumSize(75, 32)
-            btn_huella.setMaximumHeight(36)
-            if cant_huellas > 0:
-                btn_huella.setStyleSheet("background-color: #16A34A; color: white; border: none; padding: 4px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;")
-                btn_huella.setCursor(Qt.PointingHandCursor)
-            else:
-                btn_huella.setStyleSheet("background-color: #F1F5F9; color: #334155; border: 1px solid #CBD5E1; padding: 4px 6px; border-radius: 4px; font-size: 11px;")
-                btn_huella.setCursor(Qt.PointingHandCursor)
-            btn_huella.clicked.connect(lambda _, p=postulante, btn=btn_huella: self.registrar_huella_gestion(p, btn))
-            
-            btn_editar = QPushButton("Editar")
-            btn_editar.setMinimumSize(60, 32)
-            btn_editar.setMaximumHeight(36)
-            btn_editar.setCursor(Qt.PointingHandCursor)
-            btn_editar.setStyleSheet("background-color: #E0E7FF; color: #3730A3; padding: 4px 6px; border-radius: 4px; border: 1px solid #A5B4FC; font-size: 11px;")
-            btn_editar.clicked.connect(lambda _, p=postulante: self.editar_postulante_en_fila(p))
-            
-            acciones_layout.addWidget(btn_rostro)
-            acciones_layout.addWidget(btn_huella)
-            acciones_layout.addWidget(btn_editar)
-            
-            self.postulantes_nav_table.setCellWidget(fila, 3, acciones)
-            self.postulantes_nav_table.setRowHeight(fila, 50)
-            
+            rostro_registrado = full_p.get("rostro_registrado", full_p.get("tiene_rostro", True))
+            if id_postulante:
+                self._carnets_por_id[id_postulante] = carnet
+                if tiene_rostro or rostro_registrado:
+                    self._pool_fotos.start(_TareaFoto(
+                        self._emisor_fotos,
+                        generacion,
+                        id_postulante,
+                        f"{self.api_base_url}/rostros/{id_postulante}/imagen",
+                        self._auth_headers(),
+                    ))
+
+        self.carnets_nav.establecer([c for c, _, _ in self._carnets_postulantes])
+        self._aplicar_filtro_carnets()
         self.academico_stack.setCurrentIndex(3)
 
+    def _crear_carnet(self, postulante, full_p):
+        tiene_rostro = full_p.get("tiene_rostro", False)
+        rostro_registrado = full_p.get("rostro_registrado", tiene_rostro)
+        id_rostro = full_p.get("id_rostro")
+        cant_huellas = full_p.get("cantidad_huellas", 0)
+
+        carnet = CarnetPostulante(postulante, tiene_rostro, rostro_registrado, cant_huellas)
+
+        btn_rostro = carnet.btn_rostro
+        if tiene_rostro:
+            btn_rostro.clicked.connect(
+                lambda _, p=postulante, r=id_rostro: self.cambiar_estado_rostro_gestion(p, r, False)
+            )
+        elif rostro_registrado:
+            btn_rostro.clicked.connect(
+                lambda _, p=postulante, r=id_rostro: self.cambiar_estado_rostro_gestion(p, r, True)
+            )
+        else:
+            btn_rostro.clicked.connect(
+                lambda _, p=postulante, btn=btn_rostro: self.registrar_rostro_gestion(p, btn)
+            )
+
+        carnet.btn_huella.clicked.connect(
+            lambda _, p=postulante, btn=carnet.btn_huella: self.registrar_huella_gestion(p, btn)
+        )
+        carnet.btn_editar.clicked.connect(
+            lambda _, p=postulante: self.editar_postulante_en_fila(p)
+        )
+        carnet.seleccionado.connect(self._seleccionar_carnet)
+        carnet.editar_solicitado.connect(self.editar_postulante_en_fila)
+        return carnet
+
+    def _seleccionar_carnet(self, carnet):
+        anterior = getattr(self, "_carnet_seleccionado", None)
+        if anterior is not None and isValid(anterior) and anterior is not carnet:
+            anterior.set_seleccionado(False)
+        self._carnet_seleccionado = carnet
+        carnet.set_seleccionado(True)
+
+    def _filtrar_carnets_postulantes(self, _texto=""):
+        self._aplicar_filtro_carnets()
+
+    def _aplicar_filtro_carnets(self):
+        caja = getattr(self, "buscar_postulantes_gestion", None)
+        texto = _normalizar(caja.text().strip()) if caja is not None else ""
+        total = len(self._carnets_postulantes)
+        visibles = [
+            carnet for carnet, _, busqueda in self._carnets_postulantes
+            if not texto or texto in busqueda
+        ]
+
+        if total == 0:
+            mensaje = ("Aún no hay postulantes inscritos en esta gestión.\n"
+                       "Usa «Nuevo postulante» o importa un archivo de Excel.")
+        else:
+            mensaje = "Ningún postulante coincide con la búsqueda."
+        self.carnets_nav.mostrar(visibles, mensaje)
+
+        contador = getattr(self, "postulantes_nav_contador", None)
+        if contador is not None:
+            palabra = "postulante" if total == 1 else "postulantes"
+            if texto:
+                contador.setText(f"{len(visibles)} de {total} {palabra}")
+            else:
+                contador.setText(f"{total} {palabra}")
+
+    # -- Carreras e inscripción -------------------------------------------
     def seleccionar_carrera_gestion(self):
         if not self.carreras_nav:
             QMessageBox.warning(self, "Postulantes", "La gestión no tiene carreras disponibles.")
@@ -295,6 +782,7 @@ class PostulantesMixin:
         except (requests.RequestException, ValueError) as error:
             QMessageBox.critical(self, "Postulantes", f"Error de conexión: {error}")
 
+    # -- Importación ------------------------------------------------------
     def importar_postulantes_gestion(self):
         archivo, _ = QFileDialog.getOpenFileName(
             self, "Importar postulantes", "",
@@ -384,17 +872,14 @@ class PostulantesMixin:
                 lineas.append(f"  … y {len(avisos) - 15} más.")
         return "\n".join(lineas)
 
+    # -- Edición ----------------------------------------------------------
     def editar_postulante_gestion(self):
-        fila = self.postulantes_nav_table.currentRow()
-        if fila < 0 or not self.postulantes_nav_table.item(fila, 0):
+        """Edita el carnet seleccionado (clic sobre la tarjeta)."""
+        carnet = getattr(self, "_carnet_seleccionado", None)
+        if carnet is None or not isValid(carnet):
             QMessageBox.information(self, "Postulantes", "Seleccione un postulante primero.")
             return
-        ci = self.postulantes_nav_table.item(fila, 0).text()
-        postulante = next((item for item in self._obtener_lista("/postulantes?limit=1000") if str(item.get("ci")) == ci), None)
-        if not postulante:
-            QMessageBox.warning(self, "Postulantes", "No se encontró el postulante seleccionado.")
-            return
-        self.editar_postulante_en_fila(postulante)
+        self.editar_postulante_en_fila(carnet.postulante)
 
     def editar_postulante_en_fila(self, postulante):
         # Asegurarse de tener el id_postulante y los nombres/apellidos separados
@@ -409,16 +894,24 @@ class PostulantesMixin:
             postulante = full_postulante
             id_post = postulante.get("id_postulante")
 
+        carreras_disponibles = []
+        carreras_seleccionadas = []
         carreras_texto = None
         carreras = postulante.get("carreras") or []
         nombres = [c.get("nombre") for c in carreras if c.get("nombre")]
-        if not nombres and self.gestion_nav_id is not None:
+        if self.gestion_nav_id is not None:
+            carreras_disponibles = [
+                carrera for carrera in self.carreras_nav
+                if carrera.get("activa", True)
+            ]
             inscripciones = self._obtener_lista(
                 f"/inscripciones?id_gestion={self.gestion_nav_id}"
             ) or []
             for ins in inscripciones:
                 if ins.get("id_postulante") == id_post:
                     id_carrera = ins.get("id_carrera")
+                    if ins.get("estado") != "RETIRADO":
+                        carreras_seleccionadas.append(id_carrera)
                     carrera = next(
                         (c for c in self.carreras_nav if c.get("id_carrera") == id_carrera),
                         None,
@@ -427,10 +920,16 @@ class PostulantesMixin:
         if nombres:
             carreras_texto = f"{len(nombres)} carrera(s): " + ", ".join(nombres)
 
-        dlg = DialogEditarPostulante(postulante, self, carreras_texto)
+        dlg = DialogEditarPostulante(
+            postulante,
+            self,
+            carreras_texto,
+            carreras_disponibles,
+            carreras_seleccionadas,
+        )
         if not dlg.exec():
             return
-            
+
         datos_actualizados = dlg.get_data()
         if not datos_actualizados["nombres"] or not datos_actualizados["apellidos"]:
             QMessageBox.warning(self, "Postulantes", "Nombres y apellidos son obligatorios.")
@@ -443,8 +942,60 @@ class PostulantesMixin:
                 headers=self._auth_headers(), timeout=6
             )
             if respuesta.status_code == 200:
+                if self.gestion_nav_id is not None and carreras_disponibles:
+                    self._sincronizar_carreras_postulante(
+                        id_post,
+                        carreras_seleccionadas,
+                        dlg.carreras_seleccionadas(),
+                    )
                 self.abrir_postulantes_gestion()
             else:
                 QMessageBox.warning(self, "Postulantes", str(respuesta.json().get("detail", "No se pudo editar.")))
         except (requests.RequestException, ValueError) as error:
             QMessageBox.critical(self, "Postulantes", f"Error de conexión: {error}")
+
+    def _sincronizar_carreras_postulante(self, id_postulante, actuales, nuevas):
+        if len(nuevas) > 2:
+            raise ValueError("Un postulante puede tener como máximo 2 carreras por gestión.")
+        inscripciones = self._obtener_lista(
+            f"/inscripciones?id_gestion={self.gestion_nav_id}"
+        ) or []
+        por_carrera = {
+            ins.get("id_carrera"): ins for ins in inscripciones
+            if ins.get("id_postulante") == id_postulante
+        }
+        headers = self._auth_headers()
+        for id_carrera in set(actuales) - set(nuevas):
+            inscripcion = por_carrera.get(id_carrera)
+            if inscripcion and inscripcion.get("estado") != "RETIRADO":
+                respuesta = requests.patch(
+                    f"{self.api_base_url}/inscripciones/{inscripcion['id_inscripcion']}",
+                    json={"estado": "RETIRADO"},
+                    headers=headers,
+                    timeout=6,
+                )
+                if respuesta.status_code != 200:
+                    raise ValueError("No se pudo retirar una de las carreras seleccionadas.")
+        for id_carrera in set(nuevas) - set(actuales):
+            if id_carrera in por_carrera and por_carrera[id_carrera].get("estado") == "RETIRADO":
+                respuesta = requests.patch(
+                    f"{self.api_base_url}/inscripciones/{por_carrera[id_carrera]['id_inscripcion']}",
+                    json={"estado": "HABILITADO"},
+                    headers=headers,
+                    timeout=6,
+                )
+            else:
+                respuesta = requests.post(
+                    f"{self.api_base_url}/inscripciones",
+                    json={
+                        "id_postulante": id_postulante,
+                        "id_gestion": self.gestion_nav_id,
+                        "id_carrera": id_carrera,
+                        "estado": "HABILITADO",
+                    },
+                    headers=headers,
+                    timeout=6,
+                )
+            if respuesta.status_code not in (200, 201):
+                detalle = respuesta.json().get("detail", "No se pudo agregar una carrera.")
+                raise ValueError(str(detalle))
