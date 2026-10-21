@@ -1,12 +1,39 @@
 import requests
 from PySide6.QtWidgets import QStackedWidget, QMainWindow, QMessageBox
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from config.app_config import AppConfig
 from api.client import api
 from views.checkin_view import CheckInView
 from views.login_view import LoginView
 from views.main_window import MainDashboardWindow
+
+class _EmisorExamen(QObject):
+    listo = Signal(int, object, str)  # código HTTP (0 si falló), datos, error
+
+
+class _TareaExamen(QRunnable):
+    """Consulta el examen activo fuera del hilo de la interfaz."""
+
+    def __init__(self, emisor, url, headers):
+        super().__init__()
+        self._emisor = emisor
+        self._url = url
+        self._headers = headers
+
+    def run(self):
+        try:
+            res = requests.get(self._url, headers=self._headers, timeout=3)
+            datos = None
+            if res.status_code == 200:
+                try:
+                    datos = res.json()
+                except ValueError:
+                    datos = {}
+            self._emisor.listo.emit(res.status_code, datos, "")
+        except Exception as error:
+            self._emisor.listo.emit(0, None, str(error))
+
 
 class AppController(QMainWindow):
     def __init__(self, api_base_url=None):
@@ -29,7 +56,14 @@ class AppController(QMainWindow):
         self.checkin_view.solicitar_login.connect(self.mostrar_login)
         self.login_view.login_exitoso.connect(self.abrir_panel_administrativo)
 
-        # Timer de sondeo de examen activo (cada 30s)
+        # Timer de sondeo de examen activo (cada 30s). La consulta al servidor
+        # se hace en un hilo aparte: antes congelaba la ventana hasta 3 s cada
+        # vez que el servidor tardaba en responder.
+        self._consultando_examen = False
+        self._emisor_examen = _EmisorExamen()
+        self._emisor_examen.listo.connect(self._examen_consultado)
+        self._pool_examen = QThreadPool()
+        self._pool_examen.setMaxThreadCount(1)
         self.check_timer = QTimer(self)
         self.check_timer.timeout.connect(self.evaluar_examen_activo)
 
@@ -45,31 +79,38 @@ class AppController(QMainWindow):
     def evaluar_examen_activo(self):
         if self.admin_window and self.admin_window.isVisible():
             return
+        if self._consultando_examen:
+            return  # ya hay una consulta en camino
 
         app_key = AppConfig.get_app_key()
         if not app_key:
             return
 
-        headers = {"X-App-Key": app_key}
-        try:
-            res = requests.get(
-                f"{self.api_base_url}/examenes/activos-ahora",
-                headers=headers,
-                timeout=3
-            )
-            if res.status_code == 200:
-                activos = res.json().get("activos", [])
-                if activos:
-                    self.mostrar_checkin(activos[0])
-                else:
-                    self.mostrar_login()
-            elif res.status_code == 401:
-                QMessageBox.critical(
-                    self, "Clave Inválida",
-                    "La clave configurada fue dada de baja o no es válida."
-                )
+        self._consultando_examen = True
+        self._pool_examen.start(_TareaExamen(
+            self._emisor_examen,
+            f"{self.api_base_url}/examenes/activos-ahora",
+            {"X-App-Key": app_key},
+        ))
+
+    def _examen_consultado(self, status, datos, error):
+        self._consultando_examen = False
+        if self.admin_window and self.admin_window.isVisible():
+            return  # el panel se abrió mientras llegaba la respuesta
+
+        if status == 200:
+            activos = (datos or {}).get("activos", [])
+            if activos:
+                self.mostrar_checkin(activos[0])
+            else:
                 self.mostrar_login()
-        except Exception:
+        elif status == 401:
+            QMessageBox.critical(
+                self, "Clave Inválida",
+                "La clave configurada fue dada de baja o no es válida."
+            )
+            self.mostrar_login()
+        elif status == 0:  # sin conexión con el servidor
             if self.stack.currentWidget() != self.checkin_view:
                 self.mostrar_login()
 

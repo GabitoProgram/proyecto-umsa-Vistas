@@ -292,17 +292,21 @@ class ZKFingerSDK:
         return valor_default
 
     # ------------------------------------------------------------------
-    def capturar_plantilla(self):
-        """Captura imagen + plantilla. Bloquea hasta que se coloque un dedo.
+    def capturar_plantilla(self, timeout=4.0):
+        """Captura imagen + plantilla.
+
+        Espera hasta ``timeout`` segundos a que se coloque un dedo. Con
+        ``timeout=0`` hace una sola consulta y vuelve de inmediato (sirve para
+        «sondear» el lector sin congelar la interfaz).
 
         Devuelve ``(imagen_bytes, plantilla_bytes)``.
         """
         tamaño_imagen = self.ancho * self.alto
         buffer_imagen = ctypes.create_string_buffer(tamaño_imagen)
         buffer_plantilla = ctypes.create_string_buffer(MAX_TEMPLATE_SIZE)
-        limite = time.monotonic() + 4
+        limite = time.monotonic() + timeout
         ultimo_ret = ZKFP_ERR_CAPTURE
-        while time.monotonic() < limite:
+        while True:
             tamaño_plantilla = ctypes.c_uint(MAX_TEMPLATE_SIZE)
             ret = self._lib.ZKFPM_AcquireFingerprint(
                 self.hdispositivo, buffer_imagen, tamaño_imagen,
@@ -316,11 +320,15 @@ class ZKFingerSDK:
             ultimo_ret = ret
             if ret not in (ZKFP_ERR_CAPTURE, ZKFP_ERR_BUSY):
                 break
+            if time.monotonic() >= limite:
+                break
             time.sleep(0.1)
-        raise RuntimeError(
-            "No se pudo capturar la huella en 15 segundos "
-            f"(código {ultimo_ret}). Coloca el dedo sobre el lector."
-        )
+        if ultimo_ret in (ZKFP_ERR_CAPTURE, ZKFP_ERR_BUSY):
+            raise RuntimeError(
+                f"No se pudo capturar la huella en {timeout:g} segundos "
+                f"(código {ultimo_ret}). Coloca el dedo sobre el lector."
+            )
+        raise RuntimeError(f"Error del lector de huella (código {ultimo_ret}).")
 
     def capturar_imagen(self):
         """Captura sólo la imagen (sin extraer plantilla)."""

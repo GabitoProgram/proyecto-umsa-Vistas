@@ -38,9 +38,12 @@ class CheckInView(MarcacionMixin, ReconocimientoMixin, ContadorMixin, QWidget):
 
         # ── HEADER BAR ──
         header = QFrame()
+        header.setObjectName("checkinHeader")
         header.setFixedHeight(60)
+        # Con selector por nombre: un «QFrame {…}» a secas también alcanza a
+        # las etiquetas de la barra (QLabel es un QFrame) y les dibuja borde.
         header.setStyleSheet("""
-            QFrame {
+            QFrame#checkinHeader {
                 background-color: #0F2C59;
                 border-bottom: 2px solid #1E3A8A;
             }
@@ -96,7 +99,14 @@ class CheckInView(MarcacionMixin, ReconocimientoMixin, ContadorMixin, QWidget):
 
         # ── BODY ──
         body = QWidget()
-        body.setStyleSheet("background-color: #F8FAFC;")
+        body.setObjectName("checkinBody")
+        body.setAttribute(Qt.WA_StyledBackground, True)
+        # Una regla de fondo sin selector se aplicaba a TODOS los widgets de las
+        # pestañas y obligaba a recalcular estilos en cada cambio de pestaña.
+        body.setStyleSheet("""
+            QWidget#checkinBody { background-color: #F8FAFC; }
+            QTabWidget::pane { border: none; background: transparent; }
+        """)
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(20, 16, 20, 16)
         body_layout.setSpacing(12)

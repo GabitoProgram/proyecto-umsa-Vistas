@@ -142,6 +142,8 @@ class LectorZK:
     """Lector de huella de alto nivel sobre la ZKFinger SDK de ZKTeco."""
 
     tipo = "zk"
+    # Permite consultar «¿hay un dedo?» sin bloquear (ver capturar_plantilla_actual).
+    soporta_sondeo = True
 
     def __init__(self, indice=0):
         self.indice = indice
@@ -220,10 +222,10 @@ class LectorZK:
         self._requerido()
         return self.sdk.capturar_imagen(), self.ancho, self.alto
 
-    def capturar(self):
+    def capturar(self, timeout=4.0):
         """Captura imagen + plantilla. Devuelve ``(imagen, plantilla)``."""
         self._requerido()
-        imagen, plantilla = self.sdk.capturar_plantilla()
+        imagen, plantilla = self.sdk.capturar_plantilla(timeout)
         return (imagen, self.ancho, self.alto), plantilla
 
     def enrolar_dedo(self, dedo, on_avance=None):
@@ -261,10 +263,14 @@ class LectorZK:
             raise ErrorLector(f"Error comparando plantillas (código {score})")
         return score >= UMBRAL_VERIFICACION, float(score)
 
-    def capturar_plantilla_actual(self):
-        """Captura una sola vez para comparar contra varias plantillas."""
+    def capturar_plantilla_actual(self, timeout=4.0):
+        """Captura una sola vez para comparar contra varias plantillas.
+
+        Con ``timeout=0`` no espera: si no hay dedo lanza ``RuntimeError``
+        («No se pudo capturar la huella…») al instante.
+        """
         self._requerido()
-        (_imagen, _w, _h), plantilla = self.capturar()
+        (_imagen, _w, _h), plantilla = self.capturar(timeout)
         return plantilla
 
     def comparar_captura_con_plantilla(self, captura, plantilla_guardada_cruda):

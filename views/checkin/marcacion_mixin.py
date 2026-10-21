@@ -25,7 +25,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from desktop.config.app_config import AppConfig
-from desktop.views.checkin.workers import IdentificacionHuellaController
+from desktop.views.checkin.workers import (
+    IdentificacionHuellaController,
+    liberar_lector_compartido,
+)
 from desktop.biometria import (
     detectar_lectores, libfprint_disponible, sdk_zk_disponible,
 )
@@ -420,6 +423,9 @@ class MarcacionMixin:
         if self._identificacion and self._identificacion.activo:
             self._identificacion.detener()
             self._restablecer_identificacion()
+        # El lector se deja abierto entre identificaciones para ir más rápido;
+        # al salir de la estación se libera (el panel admin lo necesita).
+        liberar_lector_compartido(self)
         self.limpiar_resultado()
 
     # ══════════════════════ IDENTIFICACIÓN ══════════════════════
