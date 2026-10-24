@@ -1,7 +1,12 @@
+import sys
+import threading
+import time
+
 import cv2
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QVariantAnimation
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QThread, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -15,6 +20,9 @@ from desktop.config.app_config import AppConfig
 from desktop.views.checkin.workers import IdentifyWorker
 
 TIEMPO_PAUSA_MS = 6000  # pausa tras identificar a alguien
+# En Windows, DirectShow abre la cámara mucho más rápido que el sistema
+# predeterminado (MSMF). Si tu cámara se ve negra o falla, pon False.
+USAR_DIRECTSHOW = True
 _COLORES_AVATAR = (
     ("#DBEAFE", "#1E40AF"),
     ("#DCFCE7", "#166534"),
@@ -120,6 +128,98 @@ def _pixmap_espera(lado=116):
     _dibujar_persona(p, lado / 2, lado / 2, lado * 0.72, "#2F6FED", 3)
     p.end()
     return pm
+
+
+# ======================================================================
+# Cámara en un hilo propio
+# ======================================================================
+class HiloCamara(QThread):
+    """Abre la cámara y lee los cuadros fuera del hilo de la interfaz.
+
+    Abrir la cámara tarda segundos, ``read()`` espera cada cuadro y
+    ``release()`` también puede tardar: hechos en el hilo principal
+    congelaban toda la ventana mientras la detección estaba activa.
+    """
+
+    abierta = Signal(object)        # (esta cámara)
+    fallo = Signal(object, str)     # (esta cámara, mensaje)
+    cuadro = Signal(object, object)  # (esta cámara, QImage para mostrar)
+
+    def __init__(self, indices=(0,), parent=None):
+        super().__init__(parent)
+        self._indices = tuple(indices)
+        self._parar = threading.Event()
+        self._candado = threading.Lock()
+        self._ultimo = None
+        # La interfaz avisa cuando terminó de pintar un cuadro: así no se
+        # acumulan cuadros pendientes si la pantalla va más lenta que la cámara.
+        self._mostrado = threading.Event()
+        self._mostrado.set()
+
+    # -- llamados desde la interfaz --
+    def detener(self):
+        self._parar.set()
+
+    def cuadro_consumido(self):
+        self._mostrado.set()
+
+    def ultimo_frame(self):
+        """Copia del último cuadro (BGR) o None si aún no hay."""
+        with self._candado:
+            return None if self._ultimo is None else self._ultimo.copy()
+
+    # -- hilo --
+    @staticmethod
+    def _backends():
+        if USAR_DIRECTSHOW and sys.platform == "win32" and hasattr(cv2, "CAP_DSHOW"):
+            return (cv2.CAP_DSHOW, None)  # si DirectShow falla, el predeterminado
+        return (None,)
+
+    def _abrir(self):
+        for indice in self._indices:
+            for backend in self._backends():
+                if self._parar.is_set():
+                    return None
+                cap = (cv2.VideoCapture(indice) if backend is None
+                       else cv2.VideoCapture(indice, backend))
+                if cap.isOpened():
+                    return cap
+                cap.release()
+        return None
+
+    def run(self):
+        cap = self._abrir()
+        if cap is None:
+            if not self._parar.is_set():
+                self.fallo.emit(self, "No se pudo acceder a la cámara.\n"
+                                      "Verifique que no esté en uso por otra aplicación.")
+            return
+        try:
+            if self._parar.is_set():
+                return
+            self.abierta.emit(self)
+            fallos = 0
+            while not self._parar.is_set():
+                ok, frame = cap.read()
+                if not ok:
+                    fallos += 1
+                    if fallos > 60:
+                        self.fallo.emit(self, "Se perdió la señal de la cámara.")
+                        break
+                    time.sleep(0.03)
+                    continue
+                fallos = 0
+                with self._candado:
+                    self._ultimo = frame
+                if self._mostrado.is_set():
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    h, w, _ = rgb.shape
+                    # .copy() para no depender del buffer de numpy
+                    imagen = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+                    self._mostrado.clear()
+                    self.cuadro.emit(self, imagen)
+        finally:
+            cap.release()
 
 
 # ======================================================================
@@ -409,40 +509,85 @@ class ReconocimientoMixin:
     def iniciar_auto_deteccion(self):
         if self.auto_activo:
             return
-        self.auto_cap = cv2.VideoCapture(0)
-        if self.auto_cap is None or not self.auto_cap.isOpened():
-            self.auto_visor.mostrar_mensaje(
-                "No se pudo acceder a la cámara.\n"
-                "Verifique que no esté en uso por otra aplicación.",
-                error=True,
-            )
-            self.auto_estado.setText("Cámara no disponible.")
-            self.auto_estado.set_tono("error")
-            if self.auto_cap:
-                self.auto_cap.release()
-            self.auto_cap = None
+        # Si se acaba de detener, la cámara anterior todavía se está cerrando
+        # (en su hilo): se espera un momento para no chocar con ella.
+        anterior = getattr(self, "_camara_cerrandose", None)
+        if anterior is not None and anterior.isRunning():
+            self.auto_estado.setText("Cerrando la cámara anterior…")
+            self.auto_estado.set_tono("aviso")
+            if not getattr(self, "_reintento_camara", False):
+                self._reintento_camara = True
+                QTimer.singleShot(250, self._reintentar_inicio_camara)
             return
+
         self.auto_activo = True
         self.auto_ultimo_id = None
         self._auto_reset_ficha()
         self._pintar_toggle()
+        self.auto_visor.mostrar_mensaje("Abriendo la cámara…")
+        self.auto_estado.setText("Abriendo la cámara…")
+        self.auto_estado.set_tono("activo")
+
+        camara = HiloCamara((0,))
+        camara.abierta.connect(self._auto_camara_abierta)
+        camara.fallo.connect(self._auto_camara_fallo)
+        camara.cuadro.connect(self._auto_mostrar_cuadro)
+        self.auto_camara = camara
+        camara.start()
+
+    def _reintentar_inicio_camara(self):
+        self._reintento_camara = False
+        self.iniciar_auto_deteccion()
+
+    def _auto_camara_abierta(self, camara):
+        if camara is not self.auto_camara or not self.auto_activo:
+            return
         self.auto_estado.setText("Detección activa. Mire a la cámara.")
         self.auto_estado.set_tono("ok")
-        self.auto_frame_timer.start(30)
         self._auto_fin_cooldown()
 
+    def _auto_camara_fallo(self, camara, mensaje):
+        if camara is not self.auto_camara:
+            return
+        self._auto_liberar_camara()
+        self.auto_activo = False
+        self.auto_detect_timer.stop()
+        self._pintar_toggle()
+        self.auto_visor.mostrar_mensaje(mensaje, error=True)
+        self.auto_estado.setText("Cámara no disponible.")
+        self.auto_estado.set_tono("error")
+
+    def _auto_mostrar_cuadro(self, camara, imagen):
+        if camara is not self.auto_camara:
+            return
+        self.auto_visor.mostrar_frame(imagen)
+        camara.cuadro_consumido()
+
+    def _auto_liberar_camara(self):
+        """Pide a la cámara que se cierre (lo hace su propio hilo, sin bloquear)."""
+        camara, self.auto_camara = self.auto_camara, None
+        if camara is not None:
+            camara.detener()
+            self._camara_cerrandose = camara
+
+    def _auto_cerrar_al_salir(self):
+        """Al cerrar la aplicación se espera a que el hilo termine de verdad."""
+        self._auto_liberar_camara()
+        camara = getattr(self, "_camara_cerrandose", None)
+        if camara is not None and camara.isRunning():
+            if not camara.wait(3000):
+                camara.terminate()
+                camara.wait(1000)
+
     def detener_auto_deteccion(self):
-        if not self.auto_activo and self.auto_cap is None:
+        if not self.auto_activo and self.auto_camara is None:
             return
         self.auto_activo = False
-        self.auto_frame_timer.stop()
         self.auto_detect_timer.stop()
         self.auto_cooldown_timer.stop()
         self._auto_anim_pausa.stop()
         self.barra_pausa.set_fraccion(0.0)
-        if self.auto_cap is not None:
-            self.auto_cap.release()
-            self.auto_cap = None
+        self._auto_liberar_camara()
         self._pintar_toggle()
         self.auto_visor.mostrar_mensaje(
             "Detección detenida.\nPulsa «Iniciar detección» para continuar."
@@ -451,23 +596,13 @@ class ReconocimientoMixin:
         self.auto_estado.set_tono("neutro")
 
     # ══════════════════════ CÁMARA E IDENTIFICACIÓN ══════════════════════
-    def _auto_actualizar_frame(self):
-        if self.auto_cap and self.auto_cap.isOpened():
-            ret, frame = self.auto_cap.read()
-            if ret:
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                h, w, _ = rgb.shape
-                # .copy() para no depender del buffer de numpy
-                imagen = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
-                self.auto_visor.mostrar_frame(imagen)
-
     def _auto_detectar(self):
         if not self.auto_activo or self.auto_worker is not None:
             return
-        if not self.auto_cap or not self.auto_cap.isOpened():
+        if self.auto_camara is None:
             return
-        ret, frame = self.auto_cap.read()
-        if not ret:
+        frame = self.auto_camara.ultimo_frame()
+        if frame is None:
             return
         ok, encoded = cv2.imencode(".jpg", frame)
         if not ok:
@@ -818,13 +953,18 @@ class ReconocimientoMixin:
 
         # Estado interno del reconocimiento automático
         self.auto_activo = False
-        self.auto_cap = None
+        self.auto_camara = None
+        self._camara_cerrandose = None
+        self._reintento_camara = False
         self.auto_worker = None
         self.auto_ultimo_id = None
         self.auto_cooldown_timer = QTimer(self)
         self.auto_cooldown_timer.setSingleShot(True)
         self.auto_cooldown_timer.timeout.connect(self._auto_fin_cooldown)
-        self.auto_frame_timer = QTimer(self)
-        self.auto_frame_timer.timeout.connect(self._auto_actualizar_frame)
         self.auto_detect_timer = QTimer(self)
         self.auto_detect_timer.timeout.connect(self._auto_detectar)
+
+        # Al cerrar la aplicación, la cámara se libera ordenadamente.
+        aplicacion = QApplication.instance()
+        if aplicacion is not None:
+            aplicacion.aboutToQuit.connect(self._auto_cerrar_al_salir)
