@@ -16,25 +16,20 @@ ejecuta en una terminal y el backend en otra.
 - Para huellas: lector ZKTeco ZK9500 y la SDK oficial instalada en la
   máquina donde se ejecuta el frontend.
 
-## Crear el entorno virtual
+## Instalar dependencias
 
-Desde la carpeta del frontend:
+Este frontend se ejecuta actualmente con la instalación de Python 3.13 del
+equipo; no utiliza un entorno virtual propio `venv`. Instala las dependencias
+con Python 3.13:
 
 ```powershell
-py -3.13 -m venv venv
-.\venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install PySide6 requests pandas openpyxl opencv-python pyusb libusb
-```
-
-En Git Bash:
-
-```bash
-source venv/Scripts/activate
+py -3.13 -m pip install --upgrade pip
+py -3.13 -m pip install PySide6 requests pandas openpyxl opencv-python pyusb libusb
 ```
 
 El frontend no incluye actualmente un `requirements.txt`; por eso las
-dependencias principales se instalan con el comando anterior.
+dependencias principales se instalan directamente en Python 3.13. Si ya están
+instaladas, no es necesario repetir este paso.
 
 ## Configurar la URL del backend
 
@@ -67,14 +62,6 @@ backend. No publiques esta clave en repositorios públicos.
 
 ## Ejecutar el frontend
 
-Con el entorno virtual activo:
-
-```powershell
-python main.py
-```
-
-También puedes usar:
-
 ```powershell
 py -3.13 main.py
 ```
@@ -96,8 +83,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ```powershell
 cd "E:\INFORMATICA 8\Taller 1\Vistas\proyecto-umsa-Vistas"
-.\venv\Scripts\Activate.ps1
-python main.py
+py -3.13 main.py
 ```
 
 ## Configuración del ZK9500
@@ -172,4 +158,3 @@ No publiques:
 - Contraseñas.
 - Logs con datos personales.
 - Capturas o plantillas biométricas.
-
