@@ -1,17 +1,282 @@
 import requests
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget,
-    QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QMessageBox,
-    QLineEdit, QSpinBox, QComboBox, QFileDialog, QDialog, QCheckBox,
-    QDialogButtonBox, QInputDialog, QListWidget, QListWidgetItem,
-    QScrollArea, QGridLayout, QSizePolicy
+    QAbstractSpinBox, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QMessageBox,
+    QLineEdit, QSpinBox, QFileDialog, QInputDialog, QListWidget, QListWidgetItem,
+    QScrollArea, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
+)
 from desktop.config.app_config import AppConfig
+
+
+# ----------------------------------------------------------------------
+# Íconos de línea dibujados en código (sin emojis ni archivos externos)
+# ----------------------------------------------------------------------
+def _pixmap_icono(nombre, color, ancho=26, alto=20):
+    pm = QPixmap(ancho * 2, alto * 2)
+    pm.setDevicePixelRatio(2)
+    pm.fill(Qt.transparent)
+
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.translate(0, (alto - 18) / 2)
+    p.setPen(QPen(QColor(color), 1.7, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(Qt.NoBrush)
+
+    if nombre == "mas":
+        p.drawLine(QPointF(9, 3.5), QPointF(9, 14.5))
+        p.drawLine(QPointF(3.5, 9), QPointF(14.5, 9))
+
+    elif nombre == "menos":
+        p.drawLine(QPointF(3.5, 9), QPointF(14.5, 9))
+
+    elif nombre == "atras":
+        ruta = QPainterPath()
+        ruta.moveTo(11, 3.5)
+        ruta.lineTo(5.5, 9)
+        ruta.lineTo(11, 14.5)
+        p.drawPath(ruta)
+
+    elif nombre == "subir":
+        p.drawLine(QPointF(9, 12), QPointF(9, 3.5))
+        flecha = QPainterPath()
+        flecha.moveTo(5.5, 7)
+        flecha.lineTo(9, 3.5)
+        flecha.lineTo(12.5, 7)
+        p.drawPath(flecha)
+        bandeja = QPainterPath()
+        bandeja.moveTo(3, 11)
+        bandeja.lineTo(3, 14.5)
+        bandeja.lineTo(15, 14.5)
+        bandeja.lineTo(15, 11)
+        p.drawPath(bandeja)
+
+    elif nombre == "lupa":
+        p.drawEllipse(QPointF(8, 8), 4.8, 4.8)
+        p.drawLine(QPointF(11.6, 11.6), QPointF(15.5, 15.5))
+
+    elif nombre == "reporte":
+        hoja = QPainterPath()
+        hoja.moveTo(4.5, 2.5)
+        hoja.lineTo(10.5, 2.5)
+        hoja.lineTo(14, 6)
+        hoja.lineTo(14, 15.5)
+        hoja.lineTo(4.5, 15.5)
+        hoja.closeSubpath()
+        p.drawPath(hoja)
+        doblez = QPainterPath()
+        doblez.moveTo(10.5, 2.5)
+        doblez.lineTo(10.5, 6)
+        doblez.lineTo(14, 6)
+        p.drawPath(doblez)
+        p.drawLine(QPointF(7, 9.5), QPointF(11.5, 9.5))
+        p.drawLine(QPointF(7, 12.3), QPointF(11.5, 12.3))
+
+    elif nombre == "dado":
+        p.drawRoundedRect(QRectF(3, 3, 12, 12), 2.6, 2.6)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(color))
+        for x, y in ((6.3, 6.3), (11.7, 6.3), (9, 9), (6.3, 11.7), (11.7, 11.7)):
+            p.drawEllipse(QPointF(x, y), 1.05, 1.05)
+
+    elif nombre == "refrescar":
+        p.drawArc(QRectF(3.5, 3.5, 11, 11), 60 * 16, 270 * 16)
+        punta = QPainterPath()
+        punta.moveTo(11.2, 2.6)
+        punta.lineTo(14.6, 4.6)
+        punta.lineTo(12.2, 7.4)
+        p.drawPath(punta)
+
+    p.end()
+    return pm
+
+
+def _icono(nombre, color, ancho=26):
+    return QIcon(_pixmap_icono(nombre, color, ancho))
+
+
+def _fuente_etiqueta(px, espaciado):
+    """QSS no soporta letter-spacing; se define por código."""
+    fuente = QFont()
+    fuente.setPixelSize(px)
+    fuente.setWeight(QFont.Bold)
+    fuente.setLetterSpacing(QFont.AbsoluteSpacing, espaciado)
+    return fuente
+
+
+def _repolish(widget):
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+    widget.update()
 
 
 class ExamenWorkspaceView(QWidget):
     volver = Signal()
+
+    # Los estilos usan nombres de objeto: así no se mezclan con el estilo global
+    # de la aplicación (assets/styles.qss) ni se heredan a los cuadros de diálogo.
+    ESTILOS = """
+        QWidget#workspaceRoot, QWidget#workspaceContenido, QWidget#tabPagina {
+            background: #F8FAFC;
+        }
+        QScrollArea#workspaceScroll { background: transparent; border: none; }
+        QLabel { background: transparent; border: none; }
+
+        /* ---------- Encabezado ---------- */
+        QLabel#breadcrumb  { color: #64748B; font-size: 12px; font-weight: 600; }
+        QLabel#paginaTitulo { color: #0F2C59; font-size: 26px; font-weight: 800; }
+        QLabel#paginaSub   { color: #64748B; font-size: 13px; }
+
+        QFrame#panel {
+            background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 14px;
+        }
+        QLabel#cardTitulo { color: #1E293B; font-size: 15px; font-weight: 800; }
+        QLabel#cardNota   { color: #94A3B8; font-size: 12px; }
+        QLabel#chip {
+            background: #E8F0FD; color: #1E54B7;
+            border-radius: 12px; padding: 5px 14px;
+            font-size: 12px; font-weight: 700;
+        }
+
+        /* ---------- Datos del examen ---------- */
+        QFrame#tile {
+            background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 14px;
+        }
+        QFrame#tileAviso {
+            background: #FEF3C7; border: 1px solid #FCD34D; border-radius: 14px;
+        }
+        QLabel#tileEtiqueta      { color: #64748B; }
+        QLabel#tileEtiquetaAviso { color: #A16207; }
+        QLabel#tileValor         { color: #0F2C59; font-size: 16px; font-weight: 800; }
+        QLabel#tileValorAviso    { color: #92400E; font-size: 16px; font-weight: 800; }
+
+        /* ---------- Botones ---------- */
+        QPushButton#btnPrimario {
+            background: #1E54B7; color: #FFFFFF; border: none;
+            border-radius: 10px; padding: 0 18px;
+            font-size: 13px; font-weight: 700;
+        }
+        QPushButton#btnPrimario:hover    { background: #17449A; }
+        QPushButton#btnPrimario:pressed  { background: #12367D; }
+        QPushButton#btnPrimario:disabled { background: #A9BEE3; color: #FFFFFF; }
+
+        QPushButton#btnSecundario {
+            background: #FFFFFF; color: #334155;
+            border: 1px solid #CBD5E1; border-radius: 10px; padding: 0 16px;
+            font-size: 13px; font-weight: 700;
+        }
+        QPushButton#btnSecundario:hover   { background: #F1F5F9; border: 1px solid #B6C3D4; }
+        QPushButton#btnSecundario:pressed { background: #E2E8F0; }
+
+        QPushButton#btnExito {
+            background: #16A34A; color: #FFFFFF; border: none;
+            border-radius: 10px; padding: 0 18px;
+            font-size: 13px; font-weight: 700;
+        }
+        QPushButton#btnExito:hover   { background: #15803D; }
+        QPushButton#btnExito:pressed { background: #166534; }
+
+        QPushButton#btnPeligro {
+            background: #FFFFFF; color: #B91C1C;
+            border: 1px solid #FCA5A5; border-radius: 10px; padding: 0 18px;
+            font-size: 13px; font-weight: 700;
+        }
+        QPushButton#btnPeligro:hover { background: #FEF2F2; }
+
+        QPushButton#btnFantasma {
+            background: transparent; color: #475569; border: none;
+            border-radius: 8px; padding: 0 12px;
+            font-size: 13px; font-weight: 700;
+        }
+        QPushButton#btnFantasma:hover { background: #E2E8F0; color: #0F172A; }
+
+        /* ---------- Campos ---------- */
+        QLineEdit#buscador {
+            background: #FFFFFF; border: 1px solid #D5DEE9;
+            border-radius: 10px; padding: 8px 12px;
+            font-size: 14px; color: #0F172A;
+            selection-background-color: #BFD6F6; selection-color: #0F172A;
+        }
+        QLineEdit#buscador:hover { border: 1px solid #A9BBD1; }
+        QLineEdit#buscador:focus { border: 2px solid #1E54B7; padding: 7px 11px; }
+
+        QSpinBox#spinTolerancia {
+            background: #FFFFFF; border: 1px solid #D5DEE9; border-radius: 10px;
+            padding: 6px 12px; font-size: 14px; font-weight: 700; color: #0F172A;
+        }
+        QSpinBox#spinTolerancia:focus { border: 2px solid #1E54B7; padding: 5px 11px; }
+
+        /* ---------- Pestañas ---------- */
+        QTabWidget#tabsWorkspace::pane {
+            border: none; background: transparent; top: 0px; padding: 0px;
+        }
+        QTabWidget#tabsWorkspace QTabBar::tab {
+            background: transparent; color: #64748B;
+            border: none; border-bottom: 3px solid transparent;
+            border-radius: 0px; padding: 10px 20px; margin-right: 8px;
+            font-size: 13px; font-weight: 700;
+        }
+        QTabWidget#tabsWorkspace QTabBar::tab:hover { color: #334155; background: transparent; }
+        QTabWidget#tabsWorkspace QTabBar::tab:selected {
+            color: #1E54B7; background: transparent; border-bottom: 3px solid #1E54B7;
+        }
+
+        /* ---------- Tablas y lista ---------- */
+        QTableWidget#tablaWs {
+            background: #FFFFFF; alternate-background-color: #F8FAFD;
+            border: none; outline: none; gridline-color: transparent;
+            color: #1E293B; font-size: 13px;
+            selection-background-color: #E3EEFC; selection-color: #0F2C59;
+        }
+        QTableWidget#tablaWs::item { padding: 6px 10px; border: none; }
+        QTableWidget#tablaWs QHeaderView::section {
+            background: #F8FAFC; color: #64748B;
+            border: none; border-bottom: 1px solid #E2E8F0;
+            padding: 12px 10px; font-size: 12px; font-weight: 700;
+        }
+        QTableWidget#tablaWs QTableCornerButton::section { background: #F8FAFC; border: none; }
+
+        QListWidget#listaAulas {
+            background: #FFFFFF; border: none; outline: none;
+            color: #1E293B; font-size: 14px;
+        }
+        QListWidget#listaAulas::item {
+            padding: 12px 10px; border-bottom: 1px solid #EEF2F7;
+        }
+        QListWidget#listaAulas::item:hover    { background: #F4F8FD; }
+        QListWidget#listaAulas::item:selected { background: #E3EEFC; color: #0F2C59; }
+
+        /* ---------- Disponibilidad de sillas ---------- */
+        QFrame#stat {
+            background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px;
+        }
+        QLabel#statEtiqueta { color: #64748B; }
+        QLabel#statValor    { color: #0F2C59; font-size: 34px; font-weight: 800; }
+        QLabel#statSub      { color: #94A3B8; font-size: 12px; }
+
+        QLabel#estadoSillas {
+            border-radius: 10px; padding: 12px 14px;
+            font-size: 14px; font-weight: 700;
+        }
+        QLabel#estadoSillas[tono="neutro"] {
+            background: #F1F5F9; color: #475569; border-left: 4px solid #94A3B8;
+        }
+        QLabel#estadoSillas[tono="ok"] {
+            background: #DCFCE7; color: #166534; border-left: 4px solid #16A34A;
+        }
+        QLabel#estadoSillas[tono="aviso"] {
+            background: #FEF3C7; color: #92400E; border-left: 4px solid #D97706;
+        }
+
+        /* ---------- Scrollbar ---------- */
+        QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+        QScrollBar::handle:vertical { background: #C3D2E0; border-radius: 4px; min-height: 30px; }
+        QScrollBar::handle:vertical:hover { background: #9FB6CB; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+    """
 
     def __init__(self, examen_data, token_data=None, api_base_url=None, parent=None):
         super().__init__(parent)
@@ -20,13 +285,25 @@ class ExamenWorkspaceView(QWidget):
         self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.tolerancia_actual = self.examen.get("tolerancia_minutos", 10)
         self.aulas_disponibles = []
+        self.postulantes_examen = []
         self.carrera_nombre = ""
-        self._resolver_carrera()
         self.init_ui()
+        # Los datos se piden DESPUÉS de mostrar la pantalla: antes se hacían
+        # varias peticiones seguidas al construirla y la ventana se quedaba
+        # congelada hasta que el servidor respondía a todas.
+        QTimer.singleShot(0, self._cargar_inicial)
 
     def get_auth_headers(self):
         token = self.token_data.get("access_token", "")
         return {"Authorization": f"Bearer {token}"}
+
+    def _cargar_inicial(self):
+        self._resolver_carrera()
+        self.chip_carrera.lbl_valor.setText(self.carrera_nombre or "—")
+        self.lbl_subtitulo.setText(self.carrera_nombre or "Examen")
+        self.cargar_postulantes_examen()
+        self.cargar_aulas_sorteo()
+        self.cargar_asignaciones()
 
     def _resolver_carrera(self):
         try:
@@ -44,178 +321,148 @@ class ExamenWorkspaceView(QWidget):
         except (requests.RequestException, ValueError):
             self.carrera_nombre = ""
 
+    # ══════════════════ PIEZAS REUTILIZABLES ══════════════════
+    @staticmethod
+    def _boton(texto, tipo="primario", icono=None, alto=40):
+        nombres = {
+            "primario": "btnPrimario", "secundario": "btnSecundario",
+            "exito": "btnExito", "peligro": "btnPeligro", "fantasma": "btnFantasma",
+        }
+        boton = QPushButton(texto)
+        boton.setObjectName(nombres[tipo])
+        boton.setCursor(Qt.PointingHandCursor)
+        boton.setFocusPolicy(Qt.NoFocus)
+        boton.setMinimumHeight(alto)
+        if icono:
+            color = "#FFFFFF" if tipo in ("primario", "exito") else (
+                "#B91C1C" if tipo == "peligro" else "#334155")
+            boton.setIcon(_icono(icono, color))
+            boton.setIconSize(QSize(26, 20))
+        return boton
+
+    @staticmethod
+    def _preparar_tabla(tabla):
+        tabla.setObjectName("tablaWs")
+        tabla.setFrameShape(QFrame.NoFrame)
+        tabla.setShowGrid(False)
+        tabla.setAlternatingRowColors(True)
+        tabla.setEditTriggers(QTableWidget.NoEditTriggers)
+        tabla.setSelectionBehavior(QTableWidget.SelectRows)
+        tabla.verticalHeader().setVisible(False)
+        tabla.verticalHeader().setDefaultSectionSize(46)
+        tabla.horizontalHeader().setHighlightSections(False)
+        tabla.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+    @staticmethod
+    def _en_panel(widget, margen=10):
+        panel = QFrame()
+        panel.setObjectName("panel")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(margen, margen, margen, margen)
+        lay.addWidget(widget)
+        return panel
+
     def init_ui(self):
+        self.setObjectName("workspaceRoot")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(self.ESTILOS)
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
         scroll = QScrollArea()
+        scroll.setObjectName("workspaceScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         contenedor = QWidget()
+        contenedor.setObjectName("workspaceContenido")
+        contenedor.setAttribute(Qt.WA_StyledBackground, True)
         main_layout = QVBoxLayout(contenedor)
-        main_layout.setContentsMargins(24, 18, 24, 18)
-        main_layout.setSpacing(14)
+        main_layout.setContentsMargins(32, 26, 32, 24)
+        main_layout.setSpacing(18)
 
-        # Barra superior con botón Volver
+        # Barra superior: volver + ruta
         barra_sup = QHBoxLayout()
-        btn_volver = QPushButton("← Volver")
-        btn_volver.setCursor(Qt.PointingHandCursor)
-        btn_volver.setMinimumHeight(38)
-        btn_volver.setMinimumWidth(120)
-        btn_volver.setStyleSheet(
-            "background-color: #F1F5F9; color: #334155; padding: 8px 16px; "
-            "border-radius: 6px; font-weight: 600; font-size: 13px; border: 1px solid #CBD5E1;"
-        )
+        barra_sup.setSpacing(8)
+        btn_volver = self._boton("Volver", "fantasma", "atras")
         btn_volver.clicked.connect(self.volver.emit)
+        lbl_ruta = QLabel("Académico  ›  Gestiones  ›  Carreras  ›  Exámenes  ›  Espacio del examen")
+        lbl_ruta.setObjectName("breadcrumb")
         barra_sup.addWidget(btn_volver)
+        barra_sup.addWidget(lbl_ruta)
         barra_sup.addStretch()
         main_layout.addLayout(barra_sup)
 
-        main_layout.addWidget(self._crear_header_examen())
+        main_layout.addLayout(self._crear_header_examen())
+        main_layout.addWidget(self._crear_tarjeta_tolerancia())
 
         # Pestañas del workspace
         self.tabs = QTabWidget()
-        self.tabs.setStyleSheet("""
-            QTabBar::tab { font-size: 13px; font-weight: bold; padding: 9px 22px; }
-            QTabBar::tab:selected { color: #2563EB; border-bottom: 3px solid #2563EB; }
-        """)
-        self.tabs.addTab(self._crear_tab_postulantes(), "Postulantes e Inscripción")
-        self.tabs.addTab(self._crear_tab_aulas_sorteo(), "Aulas y Sorteo de Asientos")
+        self.tabs.setObjectName("tabsWorkspace")
+        self.tabs.setDocumentMode(True)
+        self.tabs.addTab(self._crear_tab_postulantes(), "Postulantes e inscripción")
+        self.tabs.addTab(self._crear_tab_aulas_sorteo(), "Aulas y sorteo de asientos")
         main_layout.addWidget(self.tabs, stretch=1)
 
         scroll.setWidget(contenedor)
         outer.addWidget(scroll)
 
+    # ══════════════════ ENCABEZADO ══════════════════
     def _crear_header_examen(self):
-        header_card = QFrame()
-        header_card.setObjectName("CardExamen")
-        header_card.setStyleSheet("""
-            QFrame#CardExamen {
-                background-color: #FFFFFF;
-                border: 1px solid #E2E8F0;
-                border-radius: 12px;
-            }
-        """)
-        grid = QGridLayout(header_card)
-        grid.setContentsMargins(22, 18, 22, 18)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(10)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 0)
+        caja = QVBoxLayout()
+        caja.setSpacing(14)
 
-        # Fila 0: materia + botón reporte
+        fila = QHBoxLayout()
+        fila.setSpacing(12)
+        textos = QVBoxLayout()
+        textos.setSpacing(2)
         lbl_materia = QLabel(self.examen.get("materia", "Examen"))
-        lbl_materia.setStyleSheet("font-size: 22px; font-weight: 900; color: #0F2C59;")
+        lbl_materia.setObjectName("paginaTitulo")
         lbl_materia.setWordWrap(True)
-        grid.addWidget(lbl_materia, 0, 0)
+        self.lbl_subtitulo = QLabel("Examen")
+        self.lbl_subtitulo.setObjectName("paginaSub")
+        textos.addWidget(lbl_materia)
+        textos.addWidget(self.lbl_subtitulo)
+        fila.addLayout(textos, 1)
 
-        self.btn_reporte = QPushButton("📄 Generar reporte")
-        self.btn_reporte.setCursor(Qt.PointingHandCursor)
+        self.btn_reporte = self._boton("Generar reporte", "primario", "reporte")
         self.btn_reporte.setMinimumWidth(170)
-        self.btn_reporte.setMinimumHeight(38)
-        self.btn_reporte.setStyleSheet(
-            "background-color: #2563EB; color: white; padding: 8px 16px; "
-            "border-radius: 6px; font-weight: 600; border: none;"
-        )
         self.btn_reporte.clicked.connect(self.exportar_reporte)
-        grid.addWidget(self.btn_reporte, 0, 1, Qt.AlignRight | Qt.AlignTop)
+        fila.addWidget(self.btn_reporte, 0, Qt.AlignBottom)
+        caja.addLayout(fila)
 
-        # Fila 1: chips de información (fecha, horario, carrera, tolerancia)
         chips = QHBoxLayout()
-        chips.setSpacing(10)
-        chips.addWidget(self._chip("📅 Fecha", str(self.examen.get("fecha", "—"))))
+        chips.setSpacing(14)
+        chips.addWidget(self._chip("FECHA", str(self.examen.get("fecha", "—"))), 1)
         chips.addWidget(self._chip(
-            "🕐 Horario",
+            "HORARIO",
             f"{self.examen.get('hora_inicio', '—')} - {self.examen.get('hora_fin', '—')}"
-        ))
-        chips.addWidget(self._chip("🎓 Carrera", self.carrera_nombre or "—"))
-        self.chip_tolerancia = self._chip("⏱ Tolerancia actual", f"{self.tolerancia_actual} min", destacado=True, guardar_valor=True)
-        chips.addWidget(self.chip_tolerancia)
-        chips.addStretch()
-        grid.addLayout(chips, 1, 0, 1, 2)
-
-        # Fila 2: control de tolerancia
-        tol_frame = QFrame()
-        tol_frame.setStyleSheet(
-            "background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px;"
+        ), 1)
+        self.chip_carrera = self._chip("CARRERA", "—", guardar_valor=True)
+        chips.addWidget(self.chip_carrera, 1)
+        self.chip_tolerancia = self._chip(
+            "TOLERANCIA ACTUAL", f"{self.tolerancia_actual} min",
+            destacado=True, guardar_valor=True
         )
-        tol_layout = QHBoxLayout(tol_frame)
-        tol_layout.setContentsMargins(14, 10, 14, 10)
-        tol_layout.setSpacing(10)
-
-        lbl_tol = QLabel("⏱ Tolerancia")
-        lbl_tol.setStyleSheet("font-size: 13px; font-weight: bold; color: #0F2C59;")
-        tol_layout.addWidget(lbl_tol)
-
-        self.spin_tol = QSpinBox()
-        self.spin_tol.setRange(0, 180)
-        self.spin_tol.setValue(self.tolerancia_actual)
-        self.spin_tol.setSuffix(" min")
-        self.spin_tol.setMinimumHeight(34)
-        self.spin_tol.setToolTip("Tolerancia adicional después de la hora de cierre")
-        tol_layout.addWidget(self.spin_tol)
-
-        btn_mas_5 = QPushButton("+5")
-        btn_mas_5.setMinimumWidth(52)
-        btn_mas_5.setMinimumHeight(34)
-        btn_mas_5.setCursor(Qt.PointingHandCursor)
-        btn_mas_5.setStyleSheet(
-            "background-color: #E0E7FF; color: #3730A3; border: 1px solid #A5B4FC; "
-            "padding: 4px 10px; border-radius: 6px; font-weight: bold;"
-        )
-        btn_mas_5.clicked.connect(lambda: self.ajustar_tolerancia(self.tolerancia_actual + 5))
-        tol_layout.addWidget(btn_mas_5)
-
-        btn_mas_10 = QPushButton("+10")
-        btn_mas_10.setMinimumWidth(52)
-        btn_mas_10.setMinimumHeight(34)
-        btn_mas_10.setCursor(Qt.PointingHandCursor)
-        btn_mas_10.setStyleSheet(
-            "background-color: #E0E7FF; color: #3730A3; border: 1px solid #A5B4FC; "
-            "padding: 4px 10px; border-radius: 6px; font-weight: bold;"
-        )
-        btn_mas_10.clicked.connect(lambda: self.ajustar_tolerancia(self.tolerancia_actual + 10))
-        tol_layout.addWidget(btn_mas_10)
-
-        btn_aplicar = QPushButton("Aplicar")
-        btn_aplicar.setMinimumWidth(90)
-        btn_aplicar.setMinimumHeight(34)
-        btn_aplicar.setCursor(Qt.PointingHandCursor)
-        btn_aplicar.setStyleSheet(
-            "background-color: #0F2C59; color: white; padding: 6px 16px; "
-            "border-radius: 6px; font-weight: bold; border: none;"
-        )
-        btn_aplicar.clicked.connect(lambda: self.ajustar_tolerancia(self.spin_tol.value()))
-        tol_layout.addWidget(btn_aplicar)
-
-        lbl_tol_help = QLabel("Permite el ingreso hasta hora_fin + tolerancia.")
-        lbl_tol_help.setStyleSheet("font-size: 11px; color: #94A3B8;")
-        lbl_tol_help.setWordWrap(True)
-        tol_layout.addWidget(lbl_tol_help)
-        tol_layout.addStretch()
-
-        grid.addWidget(tol_frame, 2, 0, 1, 2)
-        return header_card
+        chips.addWidget(self.chip_tolerancia, 1)
+        caja.addLayout(chips)
+        return caja
 
     def _chip(self, etiqueta, valor, destacado=False, guardar_valor=False):
         chip = QFrame()
-        bg = "#FEF2F2" if destacado else "#F1F5F9"
-        borde = "#FCA5A5" if destacado else "#E2E8F0"
-        color_val = "#B91C1C" if destacado else "#0F2C59"
-        chip.setStyleSheet(
-            f"background-color: {bg}; border: 1px solid {borde}; border-radius: 8px;"
-        )
+        chip.setObjectName("tileAviso" if destacado else "tile")
         lay = QVBoxLayout(chip)
-        lay.setContentsMargins(12, 6, 12, 6)
-        lay.setSpacing(0)
+        lay.setContentsMargins(18, 12, 18, 12)
+        lay.setSpacing(3)
         lbl_e = QLabel(etiqueta)
-        lbl_e.setStyleSheet("font-size: 10px; color: #64748B; font-weight: 600;")
+        lbl_e.setObjectName("tileEtiquetaAviso" if destacado else "tileEtiqueta")
+        lbl_e.setFont(_fuente_etiqueta(10, 1.5))
         lbl_v = QLabel(str(valor))
-        lbl_v.setStyleSheet(f"font-size: 13px; color: {color_val}; font-weight: bold;")
+        lbl_v.setObjectName("tileValorAviso" if destacado else "tileValor")
         lbl_v.setWordWrap(True)
         lay.addWidget(lbl_e)
         lay.addWidget(lbl_v)
@@ -223,61 +470,102 @@ class ExamenWorkspaceView(QWidget):
             chip.lbl_valor = lbl_v
         return chip
 
+    def _crear_tarjeta_tolerancia(self):
+        panel = QFrame()
+        panel.setObjectName("panel")
+        fila = QHBoxLayout(panel)
+        fila.setContentsMargins(22, 16, 22, 16)
+        fila.setSpacing(10)
+
+        textos = QVBoxLayout()
+        textos.setSpacing(2)
+        lbl_tol = QLabel("Tolerancia de ingreso")
+        lbl_tol.setObjectName("cardTitulo")
+        lbl_ayuda = QLabel("Permite el ingreso hasta la hora de fin más la tolerancia.")
+        lbl_ayuda.setObjectName("cardNota")
+        textos.addWidget(lbl_tol)
+        textos.addWidget(lbl_ayuda)
+        fila.addLayout(textos, 1)
+
+        btn_menos_5 = self._boton("5", "secundario", "menos", alto=40)
+        btn_menos_5.setToolTip("Restar 5 minutos")
+        btn_menos_5.clicked.connect(
+            lambda: self.spin_tol.setValue(max(0, self.spin_tol.value() - 5)))
+
+        self.spin_tol = QSpinBox()
+        self.spin_tol.setObjectName("spinTolerancia")
+        self.spin_tol.setRange(0, 180)
+        self.spin_tol.setValue(self.tolerancia_actual)
+        self.spin_tol.setSuffix(" min")
+        self.spin_tol.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.spin_tol.setAlignment(Qt.AlignCenter)
+        self.spin_tol.setMinimumHeight(40)
+        self.spin_tol.setMinimumWidth(110)
+        self.spin_tol.setToolTip("Tolerancia adicional después de la hora de cierre")
+
+        btn_mas_5 = self._boton("5", "secundario", "mas", alto=40)
+        btn_mas_5.setToolTip("Sumar 5 minutos")
+        btn_mas_5.clicked.connect(lambda: self.ajustar_tolerancia(self.tolerancia_actual + 5))
+        btn_mas_10 = self._boton("10", "secundario", "mas", alto=40)
+        btn_mas_10.setToolTip("Sumar 10 minutos y aplicar")
+        btn_mas_10.clicked.connect(lambda: self.ajustar_tolerancia(self.tolerancia_actual + 10))
+
+        btn_aplicar = self._boton("Aplicar", "primario", alto=40)
+        btn_aplicar.setMinimumWidth(100)
+        btn_aplicar.clicked.connect(lambda: self.ajustar_tolerancia(self.spin_tol.value()))
+
+        for widget in (btn_menos_5, self.spin_tol, btn_mas_5, btn_mas_10, btn_aplicar):
+            fila.addWidget(widget)
+        return panel
+
     # ══════════════════ PESTAÑA POSTULANTES ══════════════════
     def _crear_tab_postulantes(self):
         w = QWidget()
+        w.setObjectName("tabPagina")
+        w.setAttribute(Qt.WA_StyledBackground, True)
         l = QVBoxLayout(w)
-        l.setContentsMargins(16, 16, 16, 16)
-        l.setSpacing(12)
+        l.setContentsMargins(0, 18, 0, 0)
+        l.setSpacing(14)
 
         bar = QHBoxLayout()
-        bar.setSpacing(10)
+        bar.setSpacing(12)
         self.txt_buscar = QLineEdit()
-        self.txt_buscar.setPlaceholderText("🔍 Buscar postulante por CI, nombre o apellido...")
-        self.txt_buscar.setMinimumHeight(38)
+        self.txt_buscar.setObjectName("buscador")
+        self.txt_buscar.setPlaceholderText("Buscar postulante por CI, nombre o apellido…")
+        self.txt_buscar.setMinimumHeight(44)
+        self.txt_buscar.setClearButtonEnabled(True)
+        self.txt_buscar.addAction(_icono("lupa", "#94A3B8", ancho=20), QLineEdit.LeadingPosition)
+        paleta = self.txt_buscar.palette()
+        paleta.setColor(QPalette.PlaceholderText, QColor("#94A3B8"))
+        self.txt_buscar.setPalette(paleta)
         self.txt_buscar.textChanged.connect(self.filtrar_postulantes)
 
-        btn_manual = QPushButton("+ Inscripción Manual")
-        btn_manual.setMinimumHeight(38)
-        btn_manual.setMinimumWidth(180)
-        btn_manual.setCursor(Qt.PointingHandCursor)
-        btn_manual.setStyleSheet(
-            "background-color: #2563EB; color: white; padding: 8px 14px; "
-            "border-radius: 6px; font-weight: bold; border: none;"
-        )
-        btn_manual.clicked.connect(self.inscribir_manual)
+        self.lbl_contador = QLabel("0 postulantes")
+        self.lbl_contador.setObjectName("chip")
 
-        btn_excel = QPushButton("📁 Carga Masiva Excel")
-        btn_excel.setMinimumHeight(38)
-        btn_excel.setMinimumWidth(180)
-        btn_excel.setCursor(Qt.PointingHandCursor)
-        btn_excel.setStyleSheet(
-            "background-color: #16A34A; color: white; padding: 8px 14px; "
-            "border-radius: 6px; font-weight: bold; border: none;"
-        )
+        btn_manual = self._boton("Inscripción manual", "primario", "mas", alto=44)
+        btn_manual.clicked.connect(self.inscribir_manual)
+        btn_excel = self._boton("Carga masiva Excel", "exito", "subir", alto=44)
         btn_excel.clicked.connect(self.importar_postulantes_excel)
 
         bar.addWidget(self.txt_buscar, stretch=1)
+        bar.addWidget(self.lbl_contador)
         bar.addWidget(btn_manual)
         bar.addWidget(btn_excel)
         l.addLayout(bar)
 
         self.tabla_postulantes = QTableWidget(0, 7)
+        self._preparar_tabla(self.tabla_postulantes)
         self.tabla_postulantes.setHorizontalHeaderLabels([
-            "CI", "Postulante", "Inscripción", "Aula", "Asiento", "Huellas", "Rostro"
+            "C.I.", "Postulante", "Inscripción", "Aula", "Asiento", "Huellas", "Rostro"
         ])
         header = self.tabla_postulantes.horizontalHeader()
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setSectionResizeMode(3, QHeaderView.Stretch)
         for col in (0, 2, 4, 5, 6):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        self.tabla_postulantes.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.tabla_postulantes.setAlternatingRowColors(True)
-        self.tabla_postulantes.verticalHeader().setDefaultSectionSize(40)
-        l.addWidget(self.tabla_postulantes, stretch=1)
-
-        self.postulantes_examen = []
-        self.cargar_postulantes_examen()
+        self.tabla_postulantes.setMinimumHeight(360)
+        l.addWidget(self._en_panel(self.tabla_postulantes), stretch=1)
         return w
 
     def cargar_postulantes_examen(self):
@@ -292,7 +580,7 @@ class ExamenWorkspaceView(QWidget):
             )
             if respuesta.status_code == 200:
                 self.postulantes_examen = respuesta.json()
-                self.filtrar_postulantes("")
+                self.filtrar_postulantes(self.txt_buscar.text())
         except requests.RequestException:
             self.postulantes_examen = []
 
@@ -365,16 +653,26 @@ class ExamenWorkspaceView(QWidget):
         filas = [p for p in self.postulantes_examen if not texto or texto in (
             f"{p.get('ci', '')} {p.get('nombre_completo', '')}"
         ).lower()]
+        total = len(self.postulantes_examen)
+        palabra = "postulante" if total == 1 else "postulantes"
+        self.lbl_contador.setText(
+            f"{len(filas)} de {total} {palabra}" if texto else f"{total} {palabra}"
+        )
+
+        verde = QBrush(QColor("#15803D"))
+        gris = QBrush(QColor("#94A3B8"))
+        rojo = QBrush(QColor("#B91C1C"))
         self.tabla_postulantes.setRowCount(len(filas))
         for fila, postulante in enumerate(filas):
             huellas = [h for h in postulante.get("huellas", []) if h.get("habilitada")]
             aula = postulante.get("nombre_aula") or "sin asignar"
             asiento = postulante.get("numero_asiento")
+            estado = str(postulante.get("estado_inscripcion") or "")
 
             valores = (
                 postulante.get("ci"),
                 postulante.get("nombre_completo"),
-                postulante.get("estado_inscripcion"),
+                estado,
                 aula,
                 f"#{asiento}" if asiento else "—",
                 ", ".join(str(h.get("tipo_dedo")) for h in huellas) or "ninguna",
@@ -382,125 +680,141 @@ class ExamenWorkspaceView(QWidget):
             )
             for columna, valor in enumerate(valores):
                 item = QTableWidgetItem(str(valor))
-                item.setTextAlignment(Qt.AlignCenter)
+                item.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                if columna in (0, 2, 4, 5, 6):
+                    item.setTextAlignment(Qt.AlignCenter)
+                if columna == 1:
+                    fuente = item.font()
+                    fuente.setBold(True)
+                    item.setFont(fuente)
+                if columna == 2:
+                    if estado.upper() == "HABILITADO":
+                        item.setForeground(verde)
+                    elif estado.upper() in ("RETIRADO", "ANULADO"):
+                        item.setForeground(rojo)
                 if columna == 3:
-                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                    if postulante.get("nombre_aula"):
-                        item.setForeground(Qt.darkGreen)
-                if columna == 6 and postulante.get("rostro_habilitado"):
-                    item.setForeground(Qt.darkGreen)
+                    item.setForeground(verde if postulante.get("nombre_aula") else gris)
+                if columna == 5 and not huellas:
+                    item.setForeground(gris)
+                if columna == 6:
+                    item.setForeground(verde if postulante.get("rostro_habilitado") else gris)
                 self.tabla_postulantes.setItem(fila, columna, item)
 
     # ══════════════════ PESTAÑA AULAS Y SORTEO ══════════════════
     def _crear_tab_aulas_sorteo(self):
         w = QWidget()
+        w.setObjectName("tabPagina")
+        w.setAttribute(Qt.WA_StyledBackground, True)
         l = QHBoxLayout(w)
-        l.setContentsMargins(16, 16, 16, 16)
-        l.setSpacing(16)
+        l.setContentsMargins(0, 18, 0, 0)
+        l.setSpacing(18)
 
         # ── Columna izquierda: selección de aulas ──
-        izquierda = QVBoxLayout()
-        izquierda.setSpacing(10)
+        panel_aulas = QFrame()
+        panel_aulas.setObjectName("panel")
+        izquierda = QVBoxLayout(panel_aulas)
+        izquierda.setContentsMargins(20, 18, 20, 16)
+        izquierda.setSpacing(6)
 
-        lbl_aulas = QLabel("1. Seleccione las aulas para este examen")
-        lbl_aulas.setStyleSheet("font-size: 15px; font-weight: bold; color: #0F2C59;")
+        lbl_aulas = QLabel("1. Selecciona las aulas")
+        lbl_aulas.setObjectName("cardTitulo")
         izquierda.addWidget(lbl_aulas)
-
-        lbl_help = QLabel("Puede elegir una o varias aulas (se marcan con la casilla).")
-        lbl_help.setStyleSheet("font-size: 12px; color: #64748B;")
+        lbl_help = QLabel("Puedes elegir una o varias aulas marcando la casilla.")
+        lbl_help.setObjectName("cardNota")
         izquierda.addWidget(lbl_help)
+        izquierda.addSpacing(6)
 
         self.lista_aulas = QListWidget()
-        self.lista_aulas.setStyleSheet(
-            "QListWidget { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 6px; }"
-            "QListWidget::item { padding: 8px; border-bottom: 1px solid #F1F5F9; }"
-        )
+        self.lista_aulas.setObjectName("listaAulas")
+        self.lista_aulas.setFrameShape(QFrame.NoFrame)
+        self.lista_aulas.setMinimumHeight(300)
         self.lista_aulas.itemChanged.connect(self._on_aulas_seleccionadas)
         izquierda.addWidget(self.lista_aulas, stretch=1)
 
-        btn_refrescar = QPushButton("Actualizar aulas")
-        btn_refrescar.setCursor(Qt.PointingHandCursor)
-        btn_refrescar.setStyleSheet(
-            "background-color: #F1F5F9; color: #334155; padding: 8px 16px; "
-            "border-radius: 6px; font-weight: 600; border: 1px solid #CBD5E1;"
-        )
+        btn_refrescar = self._boton("Actualizar aulas", "secundario", "refrescar")
         btn_refrescar.clicked.connect(self.cargar_aulas_sorteo)
         izquierda.addWidget(btn_refrescar)
-
-        l.addLayout(izquierda, stretch=2)
+        l.addWidget(panel_aulas, stretch=2)
 
         # ── Columna derecha: disponibilidad + acciones + asignaciones ──
         derecha = QVBoxLayout()
-        derecha.setSpacing(10)
+        derecha.setSpacing(14)
+
+        self.card_disp = QFrame()
+        self.card_disp.setObjectName("panel")
+        disp_layout = QVBoxLayout(self.card_disp)
+        disp_layout.setContentsMargins(20, 18, 20, 18)
+        disp_layout.setSpacing(12)
 
         lbl_resumen = QLabel("2. Disponibilidad de sillas")
-        lbl_resumen.setStyleSheet("font-size: 15px; font-weight: bold; color: #0F2C59;")
-        derecha.addWidget(lbl_resumen)
+        lbl_resumen.setObjectName("cardTitulo")
+        disp_layout.addWidget(lbl_resumen)
 
-        # Tarjeta de disponibilidad
-        self.card_disp = QFrame()
-        self.card_disp.setStyleSheet(
-            "background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 10px;"
-        )
-        disp_layout = QVBoxLayout(self.card_disp)
-        disp_layout.setContentsMargins(18, 14, 18, 14)
-        disp_layout.setSpacing(6)
+        stats = QHBoxLayout()
+        stats.setSpacing(12)
+        stat_pend, self.lbl_pendientes, self.lbl_pendientes_sub = self._crear_stat("POR ASIGNAR")
+        stat_sillas, self.lbl_sillas, self.lbl_sillas_sub = self._crear_stat("SILLAS LIBRES")
+        stats.addWidget(stat_pend, 1)
+        stats.addWidget(stat_sillas, 1)
+        disp_layout.addLayout(stats)
 
-        self.lbl_pendientes = QLabel("Postulantes pendientes: —")
-        self.lbl_pendientes.setStyleSheet("font-size: 14px; color: #334155;")
-        self.lbl_sillas = QLabel("Sillas libres en aulas seleccionadas: —")
-        self.lbl_sillas.setStyleSheet("font-size: 14px; color: #334155;")
-        self.lbl_estado_sillas = QLabel("Seleccione al menos un aula.")
+        self.lbl_estado_sillas = QLabel("Selecciona al menos un aula.")
+        self.lbl_estado_sillas.setObjectName("estadoSillas")
+        self.lbl_estado_sillas.setProperty("tono", "neutro")
         self.lbl_estado_sillas.setWordWrap(True)
-        self.lbl_estado_sillas.setStyleSheet(
-            "font-size: 15px; font-weight: bold; color: #475569; "
-            "background-color: #F1F5F9; border-radius: 8px; padding: 10px;"
-        )
-        disp_layout.addWidget(self.lbl_pendientes)
-        disp_layout.addWidget(self.lbl_sillas)
         disp_layout.addWidget(self.lbl_estado_sillas)
-        derecha.addWidget(self.card_disp)
 
-        # Botones de acción
         acciones = QHBoxLayout()
-        self.btn_sorteo = QPushButton("🎲 Ejecutar sorteo de asientos")
-        self.btn_sorteo.setCursor(Qt.PointingHandCursor)
-        self.btn_sorteo.setStyleSheet(
-            "background-color: #0F2C59; color: white; padding: 10px 16px; "
-            "border-radius: 6px; font-weight: bold; font-size: 13px; border: none;"
-        )
+        acciones.setSpacing(10)
+        self.btn_sorteo = self._boton("Ejecutar sorteo de asientos", "primario", "dado", alto=44)
         self.btn_sorteo.clicked.connect(self.ejecutar_sorteo)
-
-        self.btn_limpiar = QPushButton("Limpiar asignaciones")
-        self.btn_limpiar.setCursor(Qt.PointingHandCursor)
-        self.btn_limpiar.setStyleSheet(
-            "background-color: #FEF2F2; color: #991B1B; padding: 10px 16px; "
-            "border-radius: 6px; font-weight: bold; font-size: 13px; border: 1px solid #FCA5A5;"
-        )
+        self.btn_limpiar = self._boton("Limpiar asignaciones", "peligro", alto=44)
         self.btn_limpiar.clicked.connect(self.limpiar_asignaciones)
-
         acciones.addWidget(self.btn_sorteo, stretch=2)
         acciones.addWidget(self.btn_limpiar, stretch=1)
-        derecha.addLayout(acciones)
+        disp_layout.addLayout(acciones)
+        derecha.addWidget(self.card_disp)
 
+        panel_asig = QFrame()
+        panel_asig.setObjectName("panel")
+        asig_layout = QVBoxLayout(panel_asig)
+        asig_layout.setContentsMargins(20, 18, 20, 12)
+        asig_layout.setSpacing(8)
         lbl_asig = QLabel("Asignaciones actuales de este examen")
-        lbl_asig.setStyleSheet("font-size: 14px; font-weight: bold; color: #0F2C59;")
-        derecha.addWidget(lbl_asig)
+        lbl_asig.setObjectName("cardTitulo")
+        asig_layout.addWidget(lbl_asig)
 
         self.tabla_asignaciones = QTableWidget(0, 4)
+        self._preparar_tabla(self.tabla_asignaciones)
         self.tabla_asignaciones.setHorizontalHeaderLabels([
             "Inscripción", "Aula", "Asiento", "Fecha"
         ])
         self.tabla_asignaciones.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.tabla_asignaciones.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.tabla_asignaciones.setAlternatingRowColors(True)
-        derecha.addWidget(self.tabla_asignaciones, stretch=1)
+        self.tabla_asignaciones.setMinimumHeight(220)
+        asig_layout.addWidget(self.tabla_asignaciones, stretch=1)
+        derecha.addWidget(panel_asig, stretch=1)
 
         l.addLayout(derecha, stretch=3)
-
-        self.cargar_aulas_sorteo()
-        self.cargar_asignaciones()
         return w
+
+    @staticmethod
+    def _crear_stat(etiqueta):
+        marco = QFrame()
+        marco.setObjectName("stat")
+        lay = QVBoxLayout(marco)
+        lay.setContentsMargins(18, 12, 18, 12)
+        lay.setSpacing(0)
+        lbl_e = QLabel(etiqueta)
+        lbl_e.setObjectName("statEtiqueta")
+        lbl_e.setFont(_fuente_etiqueta(10, 1.5))
+        valor = QLabel("—")
+        valor.setObjectName("statValor")
+        sub = QLabel("")
+        sub.setObjectName("statSub")
+        lay.addWidget(lbl_e)
+        lay.addWidget(valor)
+        lay.addWidget(sub)
+        return marco, valor, sub
 
     def cargar_aulas_sorteo(self):
         try:
@@ -519,13 +833,13 @@ class ExamenWorkspaceView(QWidget):
         self.lista_aulas.blockSignals(True)
         self.lista_aulas.clear()
         if not self.aulas_disponibles:
-            item = QListWidgetItem("No hay aulas activas. Créelas en 'Aulas y Asientos'.")
+            item = QListWidgetItem("No hay aulas activas. Créalas en «Aulas y Asientos».")
             item.setFlags(Qt.NoItemFlags)
             self.lista_aulas.addItem(item)
         for aula in self.aulas_disponibles:
             habilitados = aula.get("asientos_habilitados", 0)
             item = QListWidgetItem(
-                f"{aula.get('nombre')}  ({habilitados}/{aula.get('capacidad', 0)} asientos)"
+                f"{aula.get('nombre')}   ·   {habilitados} de {aula.get('capacidad', 0)} asientos habilitados"
             )
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Unchecked)
@@ -542,10 +856,15 @@ class ExamenWorkspaceView(QWidget):
                 seleccionadas.append(item.data(Qt.UserRole))
         return seleccionadas
 
-    def _on_aulas_seleccionadas(self):
+    def _on_aulas_seleccionadas(self, *_):
         aulas = self.aulas_seleccionadas()
         self.btn_sorteo.setEnabled(bool(aulas))
         self._actualizar_disponibilidad(aulas)
+
+    def _poner_estado_sillas(self, texto, tono):
+        self.lbl_estado_sillas.setText(texto)
+        self.lbl_estado_sillas.setProperty("tono", tono)
+        _repolish(self.lbl_estado_sillas)
 
     def _actualizar_disponibilidad(self, aulas):
         id_examen = self.examen.get("id_examen")
@@ -565,33 +884,28 @@ class ExamenWorkspaceView(QWidget):
         except (requests.RequestException, ValueError):
             return
 
-        self.lbl_pendientes.setText(
-            f"Postulantes por asignar: {d.get('pendientes', 0)} "
-            f"(ya asignados: {d.get('ya_asignados', 0)} de {d.get('total_postulantes', 0)})"
+        self.lbl_pendientes.setText(str(d.get("pendientes", 0)))
+        self.lbl_pendientes_sub.setText(
+            f"ya asignados: {d.get('ya_asignados', 0)} de {d.get('total_postulantes', 0)}"
         )
-        self.lbl_sillas.setText(f"Sillas libres en aulas seleccionadas: {d.get('asientos_libres', 0)}")
+        self.lbl_sillas.setText(str(d.get("asientos_libres", 0)))
+        self.lbl_sillas_sub.setText(
+            f"en {len(aulas)} aula(s) seleccionada(s)" if aulas else "sin aulas seleccionadas"
+        )
 
         diferencia = d.get("diferencia", 0)
         if not aulas:
-            texto = "Seleccione al menos un aula."
-            color_txt = "#475569"
-            color_bg = "#F1F5F9"
+            self._poner_estado_sillas("Selecciona al menos un aula.", "neutro")
         elif d.get("suficiente"):
             if diferencia == 0:
-                texto = "✓ Sillas exactas para los postulantes pendientes."
+                texto = "Sillas exactas para los postulantes pendientes."
             else:
-                texto = f"✓ Sillas suficientes. Sobran {diferencia} silla(s)."
-            color_txt = "#166534"
-            color_bg = "#DCFCE7"
+                texto = f"Sillas suficientes. Sobran {diferencia} silla(s)."
+            self._poner_estado_sillas(texto, "ok")
         else:
-            texto = f"⚠ Faltan {abs(diferencia)} silla(s). Puede sortear igual; los que no alcancen quedarán pendientes."
-            color_txt = "#92400E"
-            color_bg = "#FEF3C7"
-        self.lbl_estado_sillas.setText(texto)
-        self.lbl_estado_sillas.setStyleSheet(
-            f"font-size: 15px; font-weight: bold; color: {color_txt}; "
-            f"background-color: {color_bg}; border-radius: 8px; padding: 10px;"
-        )
+            self._poner_estado_sillas(
+                f"Faltan {abs(diferencia)} silla(s). Puedes sortear igual; "
+                "los que no alcancen quedarán pendientes.", "aviso")
 
     def cargar_asignaciones(self):
         id_examen = self.examen.get("id_examen")
@@ -615,9 +929,10 @@ class ExamenWorkspaceView(QWidget):
                     asignacion.get("fecha_asignacion")
                 )
                 for columna, valor in enumerate(valores):
-                    self.tabla_asignaciones.setItem(
-                        fila, columna, QTableWidgetItem(str(valor or ""))
-                    )
+                    item = QTableWidgetItem(str(valor or ""))
+                    if columna in (0, 2):
+                        item.setTextAlignment(Qt.AlignCenter)
+                    self.tabla_asignaciones.setItem(fila, columna, item)
         except requests.RequestException:
             self.tabla_asignaciones.setRowCount(0)
 
