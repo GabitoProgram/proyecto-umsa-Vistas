@@ -1,17 +1,41 @@
 import cv2
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QGuiApplication,
+    QIcon,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLayout,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
+
+
+def _ajustar_tamano_dialogo(dialogo, ancho_deseado, alto_deseado):
+    """Ajusta el diálogo al espacio disponible en pantallas pequeñas (laptops)."""
+    pantalla = QGuiApplication.primaryScreen()
+    if pantalla:
+        disponible = pantalla.availableGeometry()
+        ancho = min(ancho_deseado, int(disponible.width() * 0.92))
+        alto = min(alto_deseado, int(disponible.height() * 0.88))
+    else:
+        ancho, alto = ancho_deseado, alto_deseado
+
+    dialogo.setMinimumSize(min(540, ancho), min(440, alto))
+    dialogo.resize(ancho, alto)
 
 
 def _icono_camara(color, ancho=26, alto=20):
@@ -41,10 +65,16 @@ class VisorCamara(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(600, 400)
+        # Mínimo flexible para laptops; se expande hasta 600x400 o más en PC
+        self.setMinimumSize(420, 260)
+        self.setMaximumSize(720, 460)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._imagen = None
         self._mensaje = "Iniciando cámara…"
         self._error = False
+
+    def sizeHint(self):
+        return QSize(600, 380)
 
     def mostrar_frame(self, imagen):
         self._imagen = imagen
@@ -104,7 +134,6 @@ class VisorCamara(QWidget):
     def _pintar_mensaje(self, p):
         centro_x = self.width() / 2
         centro_y = self.height() / 2 - 34
-        color = QColor("#7F1D1D") if self._error else QColor("#334155")
         p.setPen(QPen(QColor("#F87171") if self._error else QColor("#475569"), 2.2,
                       Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         p.setBrush(Qt.NoBrush)
@@ -129,13 +158,16 @@ class VisorCamara(QWidget):
             Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap,
             self._mensaje,
         )
-        del color
 
 
 class DialogCapturaRostro(QDialog):
     ESTILOS = """
         QDialog { background: #F1F5F9; }
         QLabel { background: transparent; border: none; }
+        QScrollArea#scrollDialogo, QWidget#contenedorScroll {
+            background: transparent;
+            border: none;
+        }
 
         QFrame#card {
             background: #FFFFFF;
@@ -191,6 +223,7 @@ class DialogCapturaRostro(QDialog):
         self.imagen_capturada = None
         self.cap = None
 
+        _ajustar_tamano_dialogo(self, 690, 620)
         self.init_ui()
         self.iniciar_camara()
 
@@ -199,11 +232,10 @@ class DialogCapturaRostro(QDialog):
     # ------------------------------------------------------------------
     def init_ui(self):
         raiz = QVBoxLayout(self)
-        raiz.setContentsMargins(24, 22, 24, 20)
-        raiz.setSpacing(14)
-        raiz.setSizeConstraint(QLayout.SetFixedSize)
+        raiz.setContentsMargins(22, 18, 22, 18)
+        raiz.setSpacing(12)
 
-        # Encabezado
+        # Encabezado fijo
         lbl_titulo = QLabel("Captura de rostro")
         lbl_titulo.setObjectName("dlgTitulo")
         raiz.addWidget(lbl_titulo)
@@ -218,15 +250,28 @@ class DialogCapturaRostro(QDialog):
         lbl_sub.setObjectName("dlgSubtitulo")
         raiz.addWidget(lbl_sub)
 
+        # Área desplazable para la tarjeta de la cámara
+        scroll = QScrollArea()
+        scroll.setObjectName("scrollDialogo")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        contenedor = QWidget()
+        contenedor.setObjectName("contenedorScroll")
+        lay_scroll = QVBoxLayout(contenedor)
+        lay_scroll.setContentsMargins(2, 2, 6, 2)
+        lay_scroll.setSpacing(10)
+
         # Tarjeta con el visor
         tarjeta = QFrame()
         tarjeta.setObjectName("card")
         lay = QVBoxLayout(tarjeta)
-        lay.setContentsMargins(20, 20, 20, 16)
+        lay.setContentsMargins(18, 16, 18, 14)
         lay.setSpacing(12)
 
         self.visor = VisorCamara()
-        lay.addWidget(self.visor, 0, Qt.AlignHCenter)
+        lay.addWidget(self.visor, 1, Qt.AlignHCenter)
 
         fila_estado = QHBoxLayout()
         fila_estado.setSpacing(8)
@@ -242,9 +287,12 @@ class DialogCapturaRostro(QDialog):
             chip.setObjectName("consejo")
             fila_estado.addWidget(chip)
         lay.addLayout(fila_estado)
-        raiz.addWidget(tarjeta)
 
-        # Botones
+        lay_scroll.addWidget(tarjeta, 1)
+        scroll.setWidget(contenedor)
+        raiz.addWidget(scroll, 1)
+
+        # Botones inferiores fijos
         fila_botones = QHBoxLayout()
         fila_botones.setSpacing(10)
         atajo = QLabel("Atajo: barra espaciadora")
@@ -254,20 +302,20 @@ class DialogCapturaRostro(QDialog):
 
         self.btn_reintentar = QPushButton("Reintentar cámara")
         self.btn_reintentar.setObjectName("btnFantasma")
-        self.btn_reintentar.setMinimumHeight(44)
+        self.btn_reintentar.setMinimumHeight(40)
         self.btn_reintentar.setCursor(Qt.PointingHandCursor)
         self.btn_reintentar.clicked.connect(self.iniciar_camara)
         self.btn_reintentar.setVisible(False)
 
         self.btn_cancelar = QPushButton("Cancelar")
         self.btn_cancelar.setObjectName("btnSecundario")
-        self.btn_cancelar.setMinimumHeight(44)
+        self.btn_cancelar.setMinimumHeight(40)
         self.btn_cancelar.setCursor(Qt.PointingHandCursor)
         self.btn_cancelar.clicked.connect(self.reject)
 
         self.btn_capturar = QPushButton("Tomar foto")
         self.btn_capturar.setObjectName("btnPrimario")
-        self.btn_capturar.setMinimumHeight(44)
+        self.btn_capturar.setMinimumHeight(40)
         self.btn_capturar.setCursor(Qt.PointingHandCursor)
         self.btn_capturar.setIcon(_icono_camara("#FFFFFF"))
         self.btn_capturar.setIconSize(QSize(26, 20))

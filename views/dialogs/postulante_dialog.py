@@ -1,10 +1,27 @@
 from datetime import date
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QStackedWidget, QFrame, QComboBox, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QInputDialog, QLineEdit, QFileDialog, QDialog, QFormLayout, QCheckBox, QScrollArea
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel,
+    QStackedWidget, QFrame, QComboBox, QMessageBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QInputDialog, QLineEdit, QFileDialog,
+    QDialog, QFormLayout, QCheckBox, QScrollArea
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QPixmap, QGuiApplication
 import cv2
+
+
+def _ajustar_tamano_dialogo(dialogo, ancho_deseado, alto_deseado):
+    """Ajusta el tamaño del diálogo respetando el espacio disponible en pantallas pequeñas."""
+    pantalla = QGuiApplication.primaryScreen()
+    if pantalla:
+        disponible = pantalla.availableGeometry()
+        ancho = min(ancho_deseado, int(disponible.width() * 0.92))
+        alto = min(alto_deseado, int(disponible.height() * 0.88))
+    else:
+        ancho, alto = ancho_deseado, alto_deseado
+
+    dialogo.setMinimumSize(min(420, ancho), min(420, alto))
+    dialogo.resize(ancho, alto)
 
 
 class DialogEditarPostulante(QDialog):
@@ -16,17 +33,28 @@ class DialogEditarPostulante(QDialog):
         self.carreras_seleccionadas_iniciales = set(carreras_seleccionadas or [])
         self.checks_carreras = {}
         self.setWindowTitle("Editar Postulante")
-        self.setFixedSize(480, 700 if self.carreras else 580)
+        _ajustar_tamano_dialogo(self, 500, 700 if self.carreras else 580)
         self.init_ui()
 
     def init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(14)
+        raiz = QVBoxLayout(self)
+        raiz.setContentsMargins(24, 20, 24, 20)
+        raiz.setSpacing(12)
 
         lbl_tit = QLabel("Editar Datos del Postulante")
         lbl_tit.setStyleSheet("font-size: 18px; font-weight: 800; color: #0F2C59;")
-        layout.addWidget(lbl_tit)
+        raiz.addWidget(lbl_tit)
+
+        # Área desplazable para todo el contenido del formulario
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        contenedor = QWidget()
+        layout = QVBoxLayout(contenedor)
+        layout.setContentsMargins(2, 4, 10, 4)
+        layout.setSpacing(14)
 
         form = QFormLayout()
         form.setSpacing(10)
@@ -36,7 +64,7 @@ class DialogEditarPostulante(QDialog):
 
         self.txt_apellidos = QLineEdit(self.postulante.get("apellidos", ""))
         self.txt_apellidos.setMinimumHeight(36)
-        
+
         self.combo_genero = QComboBox()
         self.combo_genero.addItems(["MASCULINO", "FEMENINO"])
         self.combo_genero.setMinimumHeight(36)
@@ -64,7 +92,6 @@ class DialogEditarPostulante(QDialog):
         form.addRow("Dirección:", self.txt_direccion)
 
         layout.addLayout(form)
-        layout.addSpacing(12)
 
         if self.carreras:
             lbl_carr = QLabel("Carreras de esta gestión (elija 1 o 2):")
@@ -77,32 +104,34 @@ class DialogEditarPostulante(QDialog):
                 check.stateChanged.connect(self._limitar_carreras)
                 self.checks_carreras[id_carrera] = check
                 layout.addWidget(check)
-            layout.addSpacing(12)
-        
+
         # Biometric editing options
         lbl_bio = QLabel("Actualizar Biometría:")
         lbl_bio.setStyleSheet("font-size: 14px; font-weight: bold; color: #475569;")
         layout.addWidget(lbl_bio)
-        
+
         bio_box = QHBoxLayout()
         self.btn_rostro = QPushButton("Actualizar Rostro")
         self.btn_rostro.setMinimumHeight(38)
         self.btn_rostro.setCursor(Qt.PointingHandCursor)
         self.btn_rostro.setStyleSheet("background-color: #F8FAFC; border: 1px solid #CBD5E1; border-radius: 6px;")
         self.btn_rostro.clicked.connect(self.actualizar_rostro)
-        
+
         self.btn_huella = QPushButton("Actualizar Huella")
         self.btn_huella.setMinimumHeight(38)
         self.btn_huella.setCursor(Qt.PointingHandCursor)
         self.btn_huella.setStyleSheet("background-color: #F8FAFC; border: 1px solid #CBD5E1; border-radius: 6px;")
         self.btn_huella.clicked.connect(self.actualizar_huella)
-        
+
         bio_box.addWidget(self.btn_rostro)
         bio_box.addWidget(self.btn_huella)
         layout.addLayout(bio_box)
-        
-        layout.addSpacing(16)
+        layout.addStretch()
 
+        scroll.setWidget(contenedor)
+        raiz.addWidget(scroll, 1)
+
+        # Botones inferiores fijos (siempre visibles aunque la pantalla sea pequeña)
         btn_box = QHBoxLayout()
         self.btn_cancelar = QPushButton("Cancelar")
         self.btn_cancelar.setMinimumHeight(40)
@@ -118,12 +147,12 @@ class DialogEditarPostulante(QDialog):
         btn_box.addStretch()
         btn_box.addWidget(self.btn_cancelar)
         btn_box.addWidget(self.btn_guardar)
-        layout.addLayout(btn_box)
+        raiz.addLayout(btn_box)
 
     def actualizar_rostro(self):
         if self.parent() and hasattr(self.parent(), 'registrar_rostro_gestion'):
             self.parent().registrar_rostro_gestion(self.postulante, self.btn_rostro)
-            
+
     def actualizar_huella(self):
         if self.parent() and hasattr(self.parent(), 'registrar_huella_gestion'):
             self.parent().registrar_huella_gestion(self.postulante, self.btn_huella)
@@ -164,17 +193,28 @@ class DialogNuevoPostulanteGestion(QDialog):
         self.carreras = carreras or []
         self.checks = {}
         self.setWindowTitle("Nuevo postulante")
-        self.setFixedSize(480, 640)
+        _ajustar_tamano_dialogo(self, 500, 640)
         self.init_ui()
 
     def init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(12)
+        raiz = QVBoxLayout(self)
+        raiz.setContentsMargins(24, 20, 24, 20)
+        raiz.setSpacing(12)
 
         lbl_tit = QLabel("Datos del Postulante")
         lbl_tit.setStyleSheet("font-size: 18px; font-weight: 800; color: #0F2C59;")
-        layout.addWidget(lbl_tit)
+        raiz.addWidget(lbl_tit)
+
+        # Área desplazable para todo el formulario (inputs + carreras)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        contenedor_form = QWidget()
+        layout = QVBoxLayout(contenedor_form)
+        layout.setContentsMargins(2, 4, 10, 4)
+        layout.setSpacing(12)
 
         form = QFormLayout()
         form.setSpacing(10)
@@ -208,28 +248,27 @@ class DialogNuevoPostulanteGestion(QDialog):
         lbl_carr.setStyleSheet("font-size: 14px; font-weight: bold; color: #475569;")
         layout.addWidget(lbl_carr)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumHeight(150)
-        contenedor = QWidget()
-        cont_layout = QVBoxLayout(contenedor)
-        cont_layout.setContentsMargins(4, 4, 4, 4)
+        caja_carreras = QFrame()
+        caja_carreras.setStyleSheet("QFrame { background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; }")
+        cont_layout = QVBoxLayout(caja_carreras)
+        cont_layout.setContentsMargins(10, 8, 10, 8)
         cont_layout.setSpacing(6)
         for carrera in self.carreras:
             check = QCheckBox(carrera.get("nombre", "Carrera"))
             check.stateChanged.connect(self._limitar_seleccion)
             self.checks[carrera.get("id_carrera")] = check
             cont_layout.addWidget(check)
-        cont_layout.addStretch()
-        scroll.setWidget(contenedor)
-        layout.addWidget(scroll)
+        layout.addWidget(caja_carreras)
 
         self.lbl_aviso = QLabel("Máximo 2 carreras por gestión.")
         self.lbl_aviso.setStyleSheet("font-size: 11px; color: #94A3B8;")
         layout.addWidget(self.lbl_aviso)
-
         layout.addStretch()
 
+        scroll.setWidget(contenedor_form)
+        raiz.addWidget(scroll, 1)
+
+        # Botones inferiores fijos
         btn_box = QHBoxLayout()
         btn_cancel = QPushButton("Cancelar")
         btn_cancel.clicked.connect(self.reject)
@@ -242,7 +281,7 @@ class DialogNuevoPostulanteGestion(QDialog):
         btn_box.addStretch()
         btn_box.addWidget(btn_cancel)
         btn_box.addWidget(btn_save)
-        layout.addLayout(btn_box)
+        raiz.addLayout(btn_box)
 
     def _limitar_seleccion(self):
         marcados = [c for c in self.checks.values() if c.isChecked()]

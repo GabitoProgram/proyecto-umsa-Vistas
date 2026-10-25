@@ -15,6 +15,7 @@ from PySide6.QtCore import QRectF, QTimer, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QGuiApplication,
     QImage,
     QLinearGradient,
     QPainter,
@@ -33,8 +34,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
+    QWidget,
 )
 
 from desktop.biometria import (
@@ -51,6 +54,20 @@ from desktop.biometria import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _ajustar_tamano_dialogo(dialogo, ancho_deseado, alto_deseado):
+    """Adapta el tamaño del diálogo a la pantalla disponible (ideal para laptops)."""
+    pantalla = QGuiApplication.primaryScreen()
+    if pantalla:
+        disponible = pantalla.availableGeometry()
+        ancho = min(ancho_deseado, int(disponible.width() * 0.94))
+        alto = min(alto_deseado, int(disponible.height() * 0.90))
+    else:
+        ancho, alto = ancho_deseado, alto_deseado
+
+    dialogo.setMinimumSize(min(720, ancho), min(480, alto))
+    dialogo.resize(ancho, alto)
 
 
 # ======================================================================
@@ -97,7 +114,7 @@ def _capsula(cx, base_y, largo, ancho, angulo):
     return giro.map(camino)
 
 
-class MapaManos(QWidget if False else QFrame):
+class MapaManos(QFrame):
     """Dos manos dibujadas; cada dedo cambia de color según su estado."""
 
     dedo_clicked = Signal(int)
@@ -137,7 +154,8 @@ class MapaManos(QWidget if False else QFrame):
         self._palma_unidad.addRoundedRect(QRectF(50, 118, 130, 96), 30, 30)
 
         self.setMouseTracking(True)
-        self.setMinimumSize(520, 262)
+        # Reducimos ligeramente el mínimo para que escale bien en laptops (1366x768)
+        self.setMinimumSize(420, 220)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     # -- API --------------------------------------------------------------
@@ -338,6 +356,10 @@ class DialogCapturaHuella(QDialog):
     ESTILOS = """
         QDialog { background: #F1F5F9; }
         QLabel { background: transparent; border: none; }
+        QScrollArea#scrollDialogo, QWidget#contenedorScroll {
+            background: transparent;
+            border: none;
+        }
 
         QFrame#card {
             background: #FFFFFF;
@@ -404,7 +426,7 @@ class DialogCapturaHuella(QDialog):
         self.huellas_por_dedo = dict(huellas_por_dedo or {})
         self.guardar_habilitaciones_solicitado = False
         self.setWindowTitle("Registro de Huella")
-        self.setMinimumWidth(940)
+        _ajustar_tamano_dialogo(self, 960, 720)
         self.setStyleSheet(self.ESTILOS)
         self.plantilla_final = None
         self.tipo_lector = ""
@@ -417,10 +439,10 @@ class DialogCapturaHuella(QDialog):
     # ══════════════════════ INTERFAZ ══════════════════════
     def _crear_ui(self, dedo_inicial):
         raiz = QVBoxLayout(self)
-        raiz.setContentsMargins(24, 20, 24, 18)
-        raiz.setSpacing(14)
+        raiz.setContentsMargins(20, 16, 20, 16)
+        raiz.setSpacing(10)
 
-        # Encabezado
+        # Encabezado fijo arriba
         nombre = self.postulante.get("nombre_completo")
         if not nombre and self.postulante.get("nombres"):
             nombre = f"{self.postulante.get('nombres')} {self.postulante.get('apellidos', '')}".strip()
@@ -436,31 +458,46 @@ class DialogCapturaHuella(QDialog):
         raiz.addWidget(lbl_titulo)
         raiz.addWidget(lbl_sub)
 
+        # Área desplazable para el cuerpo (se activa en pantallas pequeñas)
+        scroll = QScrollArea()
+        scroll.setObjectName("scrollDialogo")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        contenedor_scroll = QWidget()
+        contenedor_scroll.setObjectName("contenedorScroll")
+        lay_scroll = QVBoxLayout(contenedor_scroll)
+        lay_scroll.setContentsMargins(2, 4, 8, 4)
+        lay_scroll.setSpacing(12)
+
         # Banner de estado del lector
         self.banner = QLabel()
         self.banner.setWordWrap(True)
         self.banner.setVisible(False)
-        raiz.addWidget(self.banner)
+        lay_scroll.addWidget(self.banner)
 
         # Cuerpo: dedos a la izquierda, captura a la derecha
         cuerpo = QHBoxLayout()
         cuerpo.setSpacing(16)
         cuerpo.addLayout(self._crear_columna_dedos(dedo_inicial), 1)
         cuerpo.addWidget(self._crear_tarjeta_captura(), 0)
-        raiz.addLayout(cuerpo, 1)
+        lay_scroll.addLayout(cuerpo, 1)
 
-        # Barra inferior
+        scroll.setWidget(contenedor_scroll)
+        raiz.addWidget(scroll, 1)
+
+        # Barra inferior fija (siempre visible en laptops)
         barra = QHBoxLayout()
         barra.addStretch()
         self.btn_cancelar = QPushButton("Cancelar")
         self.btn_cancelar.setObjectName("btnSecundario")
-        self.btn_cancelar.setMinimumHeight(42)
+        self.btn_cancelar.setMinimumHeight(40)
         self.btn_cancelar.setCursor(Qt.PointingHandCursor)
         self.btn_cancelar.clicked.connect(self.reject)
 
         self.btn_guardar_habilitaciones = QPushButton("Guardar cambios")
         self.btn_guardar_habilitaciones.setObjectName("btnExito")
-        self.btn_guardar_habilitaciones.setMinimumHeight(42)
+        self.btn_guardar_habilitaciones.setMinimumHeight(40)
         self.btn_guardar_habilitaciones.setCursor(Qt.PointingHandCursor)
         self.btn_guardar_habilitaciones.setEnabled(bool(self.huellas_por_dedo))
         self.btn_guardar_habilitaciones.clicked.connect(self._guardar_habilitaciones)
@@ -473,13 +510,13 @@ class DialogCapturaHuella(QDialog):
 
     def _crear_columna_dedos(self, dedo_inicial):
         columna = QVBoxLayout()
-        columna.setSpacing(14)
+        columna.setSpacing(12)
 
         # ── Tarjeta con el mapa de manos ──
         tarjeta_manos = QFrame()
         tarjeta_manos.setObjectName("card")
         lay = QVBoxLayout(tarjeta_manos)
-        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setContentsMargins(18, 14, 18, 14)
         lay.setSpacing(4)
 
         titulo = QLabel("Selecciona el dedo")
@@ -499,8 +536,8 @@ class DialogCapturaHuella(QDialog):
         tarjeta_dedo = QFrame()
         tarjeta_dedo.setObjectName("card")
         lay2 = QVBoxLayout(tarjeta_dedo)
-        lay2.setContentsMargins(20, 16, 20, 16)
-        lay2.setSpacing(10)
+        lay2.setContentsMargins(18, 14, 18, 14)
+        lay2.setSpacing(8)
 
         fila = QHBoxLayout()
         self.lbl_dedo_nombre = QLabel("")
@@ -534,7 +571,7 @@ class DialogCapturaHuella(QDialog):
 
     def _crear_leyenda(self):
         fila = QHBoxLayout()
-        fila.setSpacing(18)
+        fila.setSpacing(14)
         items = (
             ("Habilitado", "#22C55E", "#15803D", 1),
             ("Registrado, sin habilitar", "#FBBF24", "#B45309", 1),
@@ -560,10 +597,10 @@ class DialogCapturaHuella(QDialog):
     def _crear_tarjeta_captura(self):
         tarjeta = QFrame()
         tarjeta.setObjectName("card")
-        tarjeta.setFixedWidth(340)
+        tarjeta.setFixedWidth(320)
         lay = QVBoxLayout(tarjeta)
-        lay.setContentsMargins(20, 18, 20, 18)
-        lay.setSpacing(10)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(8)
 
         titulo = QLabel("Captura de huella")
         titulo.setObjectName("cardTitulo")
@@ -573,14 +610,14 @@ class DialogCapturaHuella(QDialog):
         etiqueta_lector.setObjectName("campoEtiqueta")
         lay.addWidget(etiqueta_lector)
         self.combo_lector = QComboBox()
-        self.combo_lector.setMinimumHeight(36)
+        self.combo_lector.setMinimumHeight(34)
         self.combo_lector.currentIndexChanged.connect(self._lector_cambiado)
         lay.addWidget(self.combo_lector)
 
-        # Visor de la huella
+        # Visor de la huella (ligeramente más compacto para encajar en 768p)
         self.visor = QLabel()
         self.visor.setAlignment(Qt.AlignCenter)
-        self.visor.setFixedSize(256, 300)
+        self.visor.setFixedSize(230, 260)
         self._mostrar_placeholder()
         fila_visor = QHBoxLayout()
         fila_visor.addStretch()
@@ -591,7 +628,7 @@ class DialogCapturaHuella(QDialog):
         self.lbl_estado = QLabel("Pulsa «Iniciar captura» y coloca el dedo en el lector.")
         self.lbl_estado.setObjectName("estadoCaptura")
         self.lbl_estado.setWordWrap(True)
-        self.lbl_estado.setMinimumHeight(40)
+        self.lbl_estado.setMinimumHeight(36)
         lay.addWidget(self.lbl_estado)
 
         self.lbl_toques = QLabel("Toques: 0")
@@ -607,10 +644,11 @@ class DialogCapturaHuella(QDialog):
 
         self.btn_iniciar = QPushButton("Iniciar captura")
         self.btn_iniciar.setObjectName("btnPrimario")
-        self.btn_iniciar.setMinimumHeight(44)
+        self.btn_iniciar.setMinimumHeight(40)
         self.btn_iniciar.setCursor(Qt.PointingHandCursor)
         self.btn_iniciar.clicked.connect(self._iniciar_captura)
         lay.addWidget(self.btn_iniciar)
+        lay.addStretch()
         return tarjeta
 
     def _mostrar_placeholder(self):
@@ -863,8 +901,10 @@ class DialogCapturaHuella(QDialog):
                 # .copy() para que la imagen no dependa del buffer temporal
                 qimg = QImage(datos, w, h, w, QImage.Format_Grayscale8).copy()
                 pixmap = QPixmap.fromImage(qimg)
-                self.visor.setPixmap(pixmap.scaled(256, 300, Qt.KeepAspectRatio,
-                                                   Qt.SmoothTransformation))
+                self.visor.setPixmap(pixmap.scaled(
+                    self.visor.width(), self.visor.height(),
+                    Qt.KeepAspectRatio, Qt.SmoothTransformation
+                ))
                 self.visor.setStyleSheet(
                     "background-color: #0B1220; border: 2px solid #86EFAC; border-radius: 12px;"
                 )
