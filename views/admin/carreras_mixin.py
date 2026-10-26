@@ -51,8 +51,15 @@ class CarrerasMixin:
             btn_editar.setCursor(Qt.PointingHandCursor)
             btn_editar.setStyleSheet("background-color: #E0E7FF; color: #3730A3; padding: 4px 8px; border-radius: 4px; border: 1px solid #A5B4FC; font-size: 11px;")
             btn_editar.clicked.connect(lambda _, item=examen: self.editar_examen_nav(item))
+            btn_eliminar = QPushButton("Eliminar")
+            btn_eliminar.setMinimumSize(70, 32)
+            btn_eliminar.setMaximumHeight(36)
+            btn_eliminar.setCursor(Qt.PointingHandCursor)
+            btn_eliminar.setStyleSheet("background-color: #FEE2E2; color: #B91C1C; padding: 4px 8px; border-radius: 4px; border: 1px solid #FCA5A5; font-size: 11px;")
+            btn_eliminar.clicked.connect(lambda _, item=examen: self.eliminar_examen_nav(item))
             acciones_layout.addWidget(boton)
             acciones_layout.addWidget(btn_editar)
+            acciones_layout.addWidget(btn_eliminar)
             self.examenes_nav_table.setCellWidget(fila, 3, acciones)
             self.examenes_nav_table.setRowHeight(fila, 50)
         self.academico_stack.setCurrentIndex(2)
@@ -77,3 +84,47 @@ class CarrerasMixin:
                     QMessageBox.warning(self, "Carrera", str(respuesta.json().get("detail", "No se pudo editar.")))
             except Exception as error:
                 QMessageBox.critical(self, "Carrera", f"Error de conexión: {error}")
+
+    def eliminar_carrera_nav(self, carrera):
+        if QMessageBox.question(
+            self, "Eliminar carrera",
+            f"¿Eliminar la carrera «{carrera.get('nombre', '')}»?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        try:
+            respuesta = requests.delete(
+                f"{self.api_base_url}/admin/carreras/{carrera['id_carrera']}",
+                headers=self._auth_headers(), timeout=6,
+            )
+            if respuesta.status_code == 204:
+                self.abrir_gestion_nav({"id_gestion": self.gestion_nav_id, "nombre": self.carrera_nav_title.text().replace("Carreras de ", "")})
+            else:
+                QMessageBox.warning(self, "Carrera", str(respuesta.json().get("detail", "No se pudo eliminar.")))
+        except (requests.RequestException, ValueError) as error:
+            QMessageBox.critical(self, "Carrera", f"Error de conexión: {error}")
+
+    def eliminar_examen_nav(self, examen):
+        if QMessageBox.question(
+            self, "Eliminar examen",
+            f"¿Eliminar el examen de «{examen.get('materia', '')}»?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        try:
+            respuesta = requests.delete(
+                f"{self.api_base_url}/admin/examenes/{examen['id_examen']}",
+                headers=self._auth_headers(), timeout=6,
+            )
+            if respuesta.status_code == 204:
+                self.abrir_carrera_nav({
+                    "id_carrera": self.carrera_nav_id,
+                    "nombre": self.examen_nav_title.text().replace("Exámenes de ", ""),
+                })
+            else:
+                QMessageBox.warning(
+                    self, "Examen",
+                    str(respuesta.json().get("detail", "No se pudo eliminar.")),
+                )
+        except (requests.RequestException, ValueError) as error:
+            QMessageBox.critical(self, "Examen", f"Error de conexión: {error}")

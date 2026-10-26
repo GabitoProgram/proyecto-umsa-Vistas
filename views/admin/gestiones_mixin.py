@@ -42,8 +42,15 @@ class GestionesMixin:
             btn_editar.setCursor(Qt.PointingHandCursor)
             btn_editar.setStyleSheet("background-color: #E0E7FF; color: #3730A3; padding: 4px 8px; border-radius: 4px; border: 1px solid #A5B4FC; font-size: 11px;")
             btn_editar.clicked.connect(lambda _, item=gestion: self.editar_gestion_nav(item))
+            btn_eliminar = QPushButton("Eliminar")
+            btn_eliminar.setMinimumSize(70, 32)
+            btn_eliminar.setMaximumHeight(36)
+            btn_eliminar.setCursor(Qt.PointingHandCursor)
+            btn_eliminar.setStyleSheet("background-color: #FEE2E2; color: #B91C1C; padding: 4px 8px; border-radius: 4px; border: 1px solid #FCA5A5; font-size: 11px;")
+            btn_eliminar.clicked.connect(lambda _, item=gestion: self.eliminar_gestion_nav(item))
             acciones_layout.addWidget(boton)
             acciones_layout.addWidget(btn_editar)
+            acciones_layout.addWidget(btn_eliminar)
             self.gestiones_nav_table.setCellWidget(fila, 3, acciones)
             self.gestiones_nav_table.setRowHeight(fila, 50)
 
@@ -74,8 +81,15 @@ class GestionesMixin:
             btn_editar.setCursor(Qt.PointingHandCursor)
             btn_editar.setStyleSheet("background-color: #E0E7FF; color: #3730A3; padding: 4px 8px; border-radius: 4px; border: 1px solid #A5B4FC; font-size: 11px;")
             btn_editar.clicked.connect(lambda _, item=carrera: self.editar_carrera_nav(item))
+            btn_eliminar = QPushButton("Eliminar")
+            btn_eliminar.setMinimumSize(70, 32)
+            btn_eliminar.setMaximumHeight(36)
+            btn_eliminar.setCursor(Qt.PointingHandCursor)
+            btn_eliminar.setStyleSheet("background-color: #FEE2E2; color: #B91C1C; padding: 4px 8px; border-radius: 4px; border: 1px solid #FCA5A5; font-size: 11px;")
+            btn_eliminar.clicked.connect(lambda _, item=carrera: self.eliminar_carrera_nav(item))
             acciones_layout.addWidget(boton)
             acciones_layout.addWidget(btn_editar)
+            acciones_layout.addWidget(btn_eliminar)
             self.carreras_nav_table.setCellWidget(fila, 2, acciones)
             self.carreras_nav_table.setRowHeight(fila, 50)
         self.academico_stack.setCurrentIndex(1)
@@ -100,3 +114,22 @@ class GestionesMixin:
                     QMessageBox.warning(self, "Gestión", str(respuesta.json().get("detail", "No se pudo editar.")))
             except Exception as error:
                 QMessageBox.critical(self, "Gestión", f"Error de conexión: {error}")
+
+    def eliminar_gestion_nav(self, gestion):
+        if QMessageBox.question(
+            self, "Eliminar gestión",
+            f"¿Eliminar la gestión «{gestion.get('nombre', '')}»?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        try:
+            respuesta = requests.delete(
+                f"{self.api_base_url}/admin/gestiones/{gestion['id_gestion']}",
+                headers=self._auth_headers(), timeout=6,
+            )
+            if respuesta.status_code == 204:
+                self.cargar_gestiones_nav()
+            else:
+                QMessageBox.warning(self, "Gestión", str(respuesta.json().get("detail", "No se pudo eliminar.")))
+        except (requests.RequestException, ValueError) as error:
+            QMessageBox.critical(self, "Gestión", f"Error de conexión: {error}")

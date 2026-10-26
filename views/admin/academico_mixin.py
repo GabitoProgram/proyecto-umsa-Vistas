@@ -365,7 +365,7 @@ class AcademicoMixin:
         ))
 
         self.gestiones_nav_table = self._crear_tabla_nav(
-            ["Gestión", "Año", "Estado", "Acciones"], 3, anchos={1: 120, 2: 150}
+            ["Gestión", "Año", "Estado", "Acciones"], 3, anchos={1: 120, 2: 150}, ancho_acciones=280
         )
         layout.addWidget(self._envolver_en_panel(self.gestiones_nav_table), 1)
 
@@ -386,7 +386,7 @@ class AcademicoMixin:
         ))
 
         self.carreras_nav_table = self._crear_tabla_nav(
-            ["Carrera", "Código", "Acciones"], 2, anchos={1: 160}
+            ["Carrera", "Código", "Acciones"], 2, anchos={1: 160}, ancho_acciones=280
         )
         layout_carreras.addWidget(self._envolver_en_panel(self.carreras_nav_table), 1)
 
@@ -405,7 +405,7 @@ class AcademicoMixin:
         ))
 
         self.examenes_nav_table = self._crear_tabla_nav(
-            ["Materia", "Fecha", "Horario", "Acciones"], 3, anchos={1: 160, 2: 180}
+            ["Materia", "Fecha", "Horario", "Acciones"], 3, anchos={1: 160, 2: 180}, ancho_acciones=280
         )
         layout_examenes.addWidget(self._envolver_en_panel(self.examenes_nav_table), 1)
 

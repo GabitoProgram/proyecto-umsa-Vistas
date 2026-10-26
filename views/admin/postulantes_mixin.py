@@ -261,12 +261,13 @@ class CarnetPostulante(QFrame):
     """Tarjeta tipo carnet con foto, datos y acciones del postulante.
 
     Los botones quedan expuestos (``btn_rostro``, ``btn_huella``,
-    ``btn_editar``) para que el mixin conecte las acciones.
+    ``btn_editar``, ``btn_eliminar``) para que el mixin conecte las acciones.
     Los estilos están definidos en el stylesheet de la vista académica.
     """
 
     seleccionado = Signal(object)
     editar_solicitado = Signal(object)
+    eliminar_solicitado = Signal(object)
 
     FOTO_ANCHO = 76
     FOTO_ALTO = 92
@@ -277,7 +278,7 @@ class CarnetPostulante(QFrame):
         self.setProperty("seleccionado", False)
         self.postulante = postulante
         self.setMinimumWidth(330)
-        self.setFixedHeight(236)
+        self.setFixedHeight(246)
 
         raiz = QVBoxLayout(self)
         raiz.setContentsMargins(0, 0, 0, 0)
@@ -408,10 +409,14 @@ class CarnetPostulante(QFrame):
             self.btn_huella = self._crear_boton("Huella", "neutro", "Registrar huella")
 
         self.btn_editar = self._crear_boton("Editar", "info", "Editar datos del postulante")
+        self.btn_eliminar = self._crear_boton(
+            "Eliminar", "peligro", "Eliminar definitivamente al postulante"
+        )
 
         fila.addWidget(self.btn_rostro, 1)
         fila.addWidget(self.btn_huella, 1)
         fila.addWidget(self.btn_editar, 1)
+        fila.addWidget(self.btn_eliminar, 1)
         return pie
 
     # -- Foto -------------------------------------------------------------
@@ -673,9 +678,62 @@ class PostulantesMixin:
         carnet.btn_editar.clicked.connect(
             lambda _, p=postulante: self.editar_postulante_en_fila(p)
         )
+        carnet.btn_eliminar.clicked.connect(
+            lambda _, p=postulante: self.eliminar_postulante_gestion(p)
+        )
         carnet.seleccionado.connect(self._seleccionar_carnet)
         carnet.editar_solicitado.connect(self.editar_postulante_en_fila)
         return carnet
+
+    def eliminar_postulante_gestion(self, postulante):
+        id_post = postulante.get("id_postulante")
+        if not id_post:
+            QMessageBox.warning(
+                self, "Postulantes",
+                "No se pudo identificar al postulante que se desea eliminar.",
+            )
+            return
+
+        nombre = _nombre_postulante(postulante)
+        confirmacion = QMessageBox.question(
+            self,
+            "Eliminar postulante",
+            (
+                f"¿Eliminar definitivamente a {nombre} (C.I. "
+                f"{postulante.get('ci', '—')})?\n\n"
+                "Se eliminarán sus inscripciones y datos biométricos. Esta acción no se puede deshacer."
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirmacion != QMessageBox.Yes:
+            return
+
+        try:
+            respuesta = requests.delete(
+                f"{self.api_base_url}/postulantes/{id_post}",
+                headers=self._auth_headers(),
+                timeout=8,
+            )
+            if respuesta.status_code == 204:
+                self.abrir_postulantes_gestion()
+                QMessageBox.information(
+                    self, "Postulantes", "El postulante fue eliminado correctamente."
+                )
+                return
+
+            try:
+                detalle = respuesta.json().get(
+                    "detail", "No se pudo eliminar el postulante."
+                )
+            except ValueError:
+                detalle = respuesta.text or "No se pudo eliminar el postulante."
+            QMessageBox.warning(self, "Postulantes", str(detalle))
+        except requests.RequestException as error:
+            QMessageBox.critical(
+                self, "Error de red",
+                f"No se pudo contactar al servidor: {error}",
+            )
 
     def _seleccionar_carnet(self, carnet):
         anterior = getattr(self, "_carnet_seleccionado", None)

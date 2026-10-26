@@ -11,6 +11,8 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QButtonGroup,
+    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -60,12 +62,44 @@ def _icono_camara(color, ancho=26, alto=20):
     return QIcon(pm)
 
 
+def _icono_usb(color, tamano=16):
+    """Ícono minimalista de puerto/conector para identificar cámaras externas."""
+    pm = QPixmap(tamano * 2, tamano * 2)
+    pm.setDevicePixelRatio(2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(QColor(color), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(Qt.NoBrush)
+    p.drawRoundedRect(QRectF(4, 5, 8, 7), 1.5, 1.5)
+    p.drawLine(QPointF(6.5, 5), QPointF(6.5, 2.5))
+    p.drawLine(QPointF(9.5, 5), QPointF(9.5, 2.5))
+    p.drawLine(QPointF(8, 12), QPointF(8, 14.5))
+    p.end()
+    return QIcon(pm)
+
+
+def _icono_refrescar(color="#475569", tamano=16):
+    """Ícono de recarga dibujado en código."""
+    pm = QPixmap(tamano * 2, tamano * 2)
+    pm.setDevicePixelRatio(2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(QColor(color), 1.7, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(Qt.NoBrush)
+    p.drawArc(QRectF(2.5, 2.5, tamano - 5, tamano - 5), 40 * 16, 280 * 16)
+    p.drawLine(QPointF(tamano - 2.5, 2.5), QPointF(tamano - 2.5, 6.5))
+    p.drawLine(QPointF(tamano - 2.5, 6.5), QPointF(tamano - 6.5, 6.5))
+    p.end()
+    return QIcon(pm)
+
+
 class VisorCamara(QWidget):
     """Visor con esquinas redondeadas y un óvalo guía para centrar el rostro."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Mínimo flexible para laptops; se expande hasta 600x400 o más en PC
         self.setMinimumSize(420, 260)
         self.setMaximumSize(720, 460)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -103,7 +137,9 @@ class VisorCamara(QWidget):
             p.end()
             return
 
-        escalada = self._imagen.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        escalada = self._imagen.scaled(
+            self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
         x = (self.width() - escalada.width()) // 2
         y = (self.height() - escalada.height()) // 2
         p.drawImage(x, y, escalada)
@@ -117,14 +153,12 @@ class VisorCamara(QWidget):
             area.center().x() - ancho / 2, area.center().y() - alto / 2, ancho, alto
         )
 
-        # Oscurece todo lo que queda fuera del óvalo
         mascara = QPainterPath()
         mascara.addRect(area)
         mascara.addEllipse(oval)
         mascara.setFillRule(Qt.OddEvenFill)
         p.fillPath(mascara, QColor(11, 18, 32, 140))
 
-        # Contorno con un halo suave
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(QColor(255, 255, 255, 60), 8))
         p.drawEllipse(oval)
@@ -134,10 +168,16 @@ class VisorCamara(QWidget):
     def _pintar_mensaje(self, p):
         centro_x = self.width() / 2
         centro_y = self.height() / 2 - 34
-        p.setPen(QPen(QColor("#F87171") if self._error else QColor("#475569"), 2.2,
-                      Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setPen(
+            QPen(
+                QColor("#F87171") if self._error else QColor("#475569"),
+                2.2,
+                Qt.SolidLine,
+                Qt.RoundCap,
+                Qt.RoundJoin,
+            )
+        )
         p.setBrush(Qt.NoBrush)
-        # Icono de cámara grande
         p.drawRoundedRect(QRectF(centro_x - 28, centro_y - 18, 56, 40), 8, 8)
         p.drawEllipse(QPointF(centro_x, centro_y + 2), 11, 11)
         tapa = QPainterPath()
@@ -147,7 +187,10 @@ class VisorCamara(QWidget):
         tapa.lineTo(centro_x + 12, centro_y - 18)
         p.drawPath(tapa)
         if self._error:
-            p.drawLine(QPointF(centro_x - 34, centro_y + 30), QPointF(centro_x + 34, centro_y - 38))
+            p.drawLine(
+                QPointF(centro_x - 34, centro_y + 30),
+                QPointF(centro_x + 34, centro_y - 38),
+            )
 
         p.setPen(QColor("#FCA5A5") if self._error else QColor("#94A3B8"))
         fuente = p.font()
@@ -175,9 +218,17 @@ class DialogCapturaRostro(QDialog):
             border-radius: 16px;
         }
 
+        /* Barra contenedora del selector de cámaras */
+        QFrame#barraCamaras {
+            background: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-radius: 12px;
+        }
+
         QLabel#dlgTitulo    { color: #0F2C59; font-size: 22px; font-weight: 800; }
         QLabel#dlgSubtitulo { color: #64748B; font-size: 13px; }
         QLabel#estadoTexto  { color: #334155; font-size: 13px; font-weight: 600; }
+        QLabel#lblFuente    { color: #475569; font-size: 12px; font-weight: 700; }
         QLabel#atajo        { color: #64748B; font-size: 12px; }
         QLabel#consejo {
             background: #EEF3FB; color: #1E4E96;
@@ -185,6 +236,40 @@ class DialogCapturaRostro(QDialog):
             font-size: 11px; font-weight: 600;
         }
 
+        /* Botones tipo Píldora (Chips) para elegir cámara en 1 clic */
+        QPushButton#chipCamara {
+            background: #FFFFFF;
+            color: #475569;
+            border: 1px solid #CBD5E1;
+            border-radius: 8px;
+            padding: 5px 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        QPushButton#chipCamara:hover {
+            background: #F1F5F9;
+            border-color: #94A3B8;
+            color: #0F172A;
+        }
+        QPushButton#chipCamara:checked {
+            background: #1E54B7;
+            color: #FFFFFF;
+            border: 1px solid #1E54B7;
+            font-weight: 700;
+        }
+
+        /* Botón de recarga rápida en la barra */
+        QPushButton#btnRefrescar {
+            background: #FFFFFF;
+            border: 1px solid #CBD5E1;
+            border-radius: 8px;
+        }
+        QPushButton#btnRefrescar:hover {
+            background: #E8F0FD;
+            border-color: #1E54B7;
+        }
+
+        /* Botones principales inferiores */
         QPushButton#btnPrimario {
             background: #1E54B7; color: #FFFFFF; border: none;
             border-radius: 10px; padding: 0 22px;
@@ -222,6 +307,7 @@ class DialogCapturaRostro(QDialog):
         self.postulante = postulante or {}
         self.imagen_capturada = None
         self.cap = None
+        self.indice_actual = 0
 
         _ajustar_tamano_dialogo(self, 690, 620)
         self.init_ui()
@@ -269,6 +355,69 @@ class DialogCapturaRostro(QDialog):
         lay = QVBoxLayout(tarjeta)
         lay.setContentsMargins(18, 16, 18, 14)
         lay.setSpacing(12)
+
+        # --- BARRA MODERNA DE SELECCIÓN DE CÁMARAS ---
+        barra_camaras = QFrame()
+        barra_camaras.setObjectName("barraCamaras")
+        fila_camara = QHBoxLayout(barra_camaras)
+        fila_camara.setContentsMargins(12, 8, 12, 8)
+        fila_camara.setSpacing(8)
+
+        icono_lbl = QLabel()
+        icono_lbl.setPixmap(_icono_camara("#475569", 20, 16).pixmap(20, 16))
+        fila_camara.addWidget(icono_lbl)
+
+        etiqueta_camara = QLabel("Dispositivo:")
+        etiqueta_camara.setObjectName("lblFuente")
+        fila_camara.addWidget(etiqueta_camara)
+
+        # Grupo de botones exclusivos (Píldoras de 1 clic)
+        self.grupo_camaras = QButtonGroup(self)
+        self.grupo_camaras.setExclusive(True)
+
+        opciones_camara = [
+            (0, "Integrada (0)", False),
+            (1, "USB 1", True),
+            (2, "USB 2", True),
+            (3, "USB 3", True),
+        ]
+
+        for idx, texto, es_usb in opciones_camara:
+            btn_chip = QPushButton(texto)
+            btn_chip.setObjectName("chipCamara")
+            btn_chip.setCheckable(True)
+            btn_chip.setCursor(Qt.PointingHandCursor)
+            btn_chip.setMinimumHeight(30)
+            if es_usb:
+                btn_chip.setIcon(_icono_usb("#64748B", 14))
+                btn_chip.setIconSize(QSize(14, 14))
+                btn_chip.setToolTip(f"Conectar a cámara externa USB (Puerto {idx})")
+            else:
+                btn_chip.setToolTip("Cámara principal integrada en la laptop (Puerto 0)")
+
+            if idx == 0:
+                btn_chip.setChecked(True)
+
+            self.grupo_camaras.addButton(btn_chip, idx)
+            fila_camara.addWidget(btn_chip)
+
+        self.grupo_camaras.idClicked.connect(self._camara_seleccionada)
+
+        fila_camara.addStretch()
+
+        # Botón de refrescar directo en la barra por si acaban de conectar el USB
+        self.btn_refrescar_barra = QPushButton()
+        self.btn_refrescar_barra.setObjectName("btnRefrescar")
+        self.btn_refrescar_barra.setFixedSize(30, 30)
+        self.btn_refrescar_barra.setCursor(Qt.PointingHandCursor)
+        self.btn_refrescar_barra.setIcon(_icono_refrescar("#1E54B7", 16))
+        self.btn_refrescar_barra.setIconSize(QSize(16, 16))
+        self.btn_refrescar_barra.setToolTip("Reconectar / Actualizar cámara actual")
+        self.btn_refrescar_barra.clicked.connect(self.iniciar_camara)
+        fila_camara.addWidget(self.btn_refrescar_barra)
+
+        lay.addWidget(barra_camaras)
+        # ---------------------------------------------
 
         self.visor = VisorCamara()
         lay.addWidget(self.visor, 1, Qt.AlignHCenter)
@@ -337,26 +486,51 @@ class DialogCapturaRostro(QDialog):
             f"background: {self.COLORES_ESTADO[tono]}; border-radius: 5px;"
         )
 
+    def _actualizar_iconos_chips(self):
+        """Actualiza el color del ícono USB a blanco cuando el chip está activo."""
+        for btn in self.grupo_camaras.buttons():
+            idx = self.grupo_camaras.id(btn)
+            if idx > 0:
+                color = "#FFFFFF" if btn.isChecked() else "#64748B"
+                btn.setIcon(_icono_usb(color, 14))
+
     # ------------------------------------------------------------------
     # Cámara
     # ------------------------------------------------------------------
     def iniciar_camara(self):
-        # Probar varios índices por si la cámara principal está ocupada
+        self.detener_camara()
+        self._actualizar_iconos_chips()
+        indice = self.indice_actual
+
+        self.visor.mostrar_mensaje(f"Conectando con cámara {indice}…", error=False)
+        self._poner_estado(f"Abriendo cámara {indice}…", "aviso")
+        QGuiApplication.processEvents()
+
         self.cap = None
-        for indice in (0, 1, 2):
-            cap = cv2.VideoCapture(indice)
+        try:
+            cap = cv2.VideoCapture(int(indice), cv2.CAP_DSHOW)
+        except (AttributeError, TypeError):
+            cap = cv2.VideoCapture(int(indice))
+        if cap.isOpened():
+            self.cap = cap
+        else:
+            cap.release()
+        if self.cap is None:
+            # Algunos controladores no funcionan con DirectShow.
+            cap = cv2.VideoCapture(int(indice))
             if cap.isOpened():
                 self.cap = cap
-                break
-            cap.release()
+            else:
+                cap.release()
         if self.cap is None or not self.cap.isOpened():
             self.cap = None
+            tipo = "integrada (0)" if indice == 0 else f"USB {indice}"
             self.visor.mostrar_mensaje(
-                "No se pudo acceder a la cámara.\n"
-                "Verifique que no esté en uso por otra aplicación y vuelva a intentarlo.",
+                f"No se detectó la cámara {tipo}.\n"
+                "Verifique que esté bien conectada por USB y que no esté en uso por otra aplicación.",
                 error=True,
             )
-            self._poner_estado("Cámara no disponible", "error")
+            self._poner_estado(f"Cámara {tipo} no disponible", "error")
             self.btn_capturar.setEnabled(False)
             self.btn_reintentar.setVisible(True)
         else:
@@ -365,13 +539,18 @@ class DialogCapturaRostro(QDialog):
             self._poner_estado("Cámara activa. Centra el rostro en el óvalo.", "ok")
             self.timer.start(30)
 
+    def _camara_seleccionada(self, indice):
+        if indice == self.indice_actual and self.cap is not None:
+            return
+        self.indice_actual = indice
+        self.iniciar_camara()
+
     def actualizar_frame(self):
         if self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, _ = rgb.shape
-                # .copy() para no depender del buffer de numpy
                 imagen = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
                 self.visor.mostrar_frame(imagen)
 
@@ -384,23 +563,26 @@ class DialogCapturaRostro(QDialog):
     def capturar(self):
         if not self.cap or not self.cap.isOpened():
             QMessageBox.warning(
-                self, "Cámara no disponible",
+                self,
+                "Cámara no disponible",
                 "No se pudo acceder a la cámara. Cierre otras aplicaciones que la usen "
-                "(o el registro de check-in) y vuelva a intentarlo."
+                "(o el registro de check-in) y vuelva a intentarlo.",
             )
             return
         ret, frame = self.cap.read()
         if not ret:
             QMessageBox.warning(
-                self, "Captura fallida",
-                "No se pudo leer la imagen de la cámara. Intente nuevamente."
+                self,
+                "Captura fallida",
+                "No se pudo leer la imagen de la cámara. Intente nuevamente.",
             )
             return
-        ok, encoded = cv2.imencode('.jpg', frame)
+        ok, encoded = cv2.imencode(".jpg", frame)
         if not ok:
             QMessageBox.warning(
-                self, "Captura fallida",
-                "No se pudo codificar la imagen capturada. Intente nuevamente."
+                self,
+                "Captura fallida",
+                "No se pudo codificar la imagen capturada. Intente nuevamente.",
             )
             return
         self.imagen_capturada = encoded.tobytes()

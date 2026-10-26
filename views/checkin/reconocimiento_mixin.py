@@ -1,12 +1,14 @@
 import sys
 import threading
 import time
+import logging
 
 import cv2
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QThread, QTimer, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -17,7 +19,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from desktop.config.app_config import AppConfig
-from desktop.views.checkin.workers import IdentifyWorker
+from desktop.views.checkin.workers import IdentifyWorker, _ejecutar_en_hilo
+
+log = logging.getLogger(__name__)
 
 TIEMPO_PAUSA_MS = 6000  # pausa tras identificar a alguien
 # En Windows, DirectShow abre la cámara mucho más rápido que el sistema
@@ -67,6 +71,45 @@ def _formatear_hora(valor):
     return texto.split(".")[0][:8]
 
 
+def _icono_camara(color, ancho=20, alto=16):
+    """Ícono de cámara dibujado en código para la barra de selección."""
+    pm = QPixmap(ancho * 2, alto * 2)
+    pm.setDevicePixelRatio(2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.translate(0, (alto - 16) / 2)
+    p.setPen(QPen(QColor(color), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(Qt.NoBrush)
+    p.drawRoundedRect(QRectF(2, 4.5, 13, 9), 2.2, 2.2)
+    p.drawEllipse(QPointF(8.5, 9), 2.5, 2.5)
+    tapa = QPainterPath()
+    tapa.moveTo(5.5, 4.5)
+    tapa.lineTo(6.8, 2.7)
+    tapa.lineTo(10.2, 2.7)
+    tapa.lineTo(11.5, 4.5)
+    p.drawPath(tapa)
+    p.end()
+    return QIcon(pm)
+
+
+def _icono_usb(color, tamano=14):
+    """Ícono minimalista de puerto USB para identificar cámaras externas."""
+    pm = QPixmap(tamano * 2, tamano * 2)
+    pm.setDevicePixelRatio(2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(QColor(color), 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(Qt.NoBrush)
+    p.drawRoundedRect(QRectF(3.5, 4.5, 7, 6), 1.4, 1.4)
+    p.drawLine(QPointF(5.5, 4.5), QPointF(5.5, 2))
+    p.drawLine(QPointF(8.5, 4.5), QPointF(8.5, 2))
+    p.drawLine(QPointF(7, 10.5), QPointF(7, 13))
+    p.end()
+    return QIcon(pm)
+
+
 def _dibujar_persona(p, cx, cy, escala, color, grosor):
     """Silueta de cabeza y hombros."""
     p.setPen(QPen(QColor(color), grosor, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
@@ -74,9 +117,14 @@ def _dibujar_persona(p, cx, cy, escala, color, grosor):
     p.drawEllipse(QPointF(cx, cy - 0.16 * escala), 0.15 * escala, 0.15 * escala)
     ruta = QPainterPath()
     ruta.moveTo(cx - 0.30 * escala, cy + 0.34 * escala)
-    ruta.cubicTo(cx - 0.27 * escala, cy + 0.04 * escala,
-                 cx + 0.27 * escala, cy + 0.04 * escala,
-                 cx + 0.30 * escala, cy + 0.34 * escala)
+    ruta.cubicTo(
+        cx - 0.27 * escala,
+        cy + 0.04 * escala,
+        cx + 0.27 * escala,
+        cy + 0.04 * escala,
+        cx + 0.30 * escala,
+        cy + 0.34 * escala,
+    )
     p.drawPath(ruta)
 
 
@@ -131,7 +179,7 @@ def _pixmap_espera(lado=116):
 
 
 # ======================================================================
-# Cámara en un hilo propio
+# Cámara en un hilo propio (INTACTO)
 # ======================================================================
 class HiloCamara(QThread):
     """Abre la cámara y lee los cuadros fuera del hilo de la interfaz.
@@ -141,8 +189,8 @@ class HiloCamara(QThread):
     congelaban toda la ventana mientras la detección estaba activa.
     """
 
-    abierta = Signal(object)        # (esta cámara)
-    fallo = Signal(object, str)     # (esta cámara, mensaje)
+    abierta = Signal(object)         # (esta cámara)
+    fallo = Signal(object, str)      # (esta cámara, mensaje)
     cuadro = Signal(object, object)  # (esta cámara, QImage para mostrar)
 
     def __init__(self, indices=(0,), parent=None):
@@ -180,8 +228,11 @@ class HiloCamara(QThread):
             for backend in self._backends():
                 if self._parar.is_set():
                     return None
-                cap = (cv2.VideoCapture(indice) if backend is None
-                       else cv2.VideoCapture(indice, backend))
+                cap = (
+                    cv2.VideoCapture(indice)
+                    if backend is None
+                    else cv2.VideoCapture(indice, backend)
+                )
                 if cap.isOpened():
                     return cap
                 cap.release()
@@ -191,8 +242,11 @@ class HiloCamara(QThread):
         cap = self._abrir()
         if cap is None:
             if not self._parar.is_set():
-                self.fallo.emit(self, "No se pudo acceder a la cámara.\n"
-                                      "Verifique que no esté en uso por otra aplicación.")
+                self.fallo.emit(
+                    self,
+                    "No se pudo acceder a la cámara seleccionada.\n"
+                    "Verifique que esté conectada y que no esté en uso por otra aplicación.",
+                )
             return
         try:
             if self._parar.is_set():
@@ -319,8 +373,11 @@ class VisorCamara(QWidget):
         p.setBrush(color)
         p.drawEllipse(QPointF(caja.left() + 15, caja.center().y()), 4.5, 4.5)
         p.setPen(QColor("#F8FAFC"))
-        p.drawText(QRectF(caja.left() + 26, caja.top(), ancho - 28, caja.height()),
-                   Qt.AlignVCenter | Qt.AlignLeft, texto)
+        p.drawText(
+            QRectF(caja.left() + 26, caja.top(), ancho - 28, caja.height()),
+            Qt.AlignVCenter | Qt.AlignLeft,
+            texto,
+        )
 
     def _pintar_mensaje(self, p):
         cx = self.width() / 2
@@ -421,9 +478,37 @@ ESTILOS_RECONOCIMIENTO = """
     QFrame#card {
         background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 20px;
     }
-    QLabel#cardTitulo { color: #0F2C59; font-size: 20px; font-weight: 800; }
-    QLabel#cardNota   { color: #64748B; font-size: 13px; }
+    QLabel#cardTitulo  { color: #0F2C59; font-size: 20px; font-weight: 800; }
+    QLabel#cardNota    { color: #64748B; font-size: 13px; }
     QLabel#estadoTexto { color: #334155; font-size: 13px; font-weight: 600; }
+    QLabel#lblFuente   { color: #475569; font-size: 12px; font-weight: 700; }
+
+    /* ---------- Barra moderna de selección de cámaras ---------- */
+    QFrame#barraCamaras {
+        background: #F8FAFC;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+    }
+    QPushButton#chipCamara {
+        background: #FFFFFF;
+        color: #475569;
+        border: 1px solid #CBD5E1;
+        border-radius: 8px;
+        padding: 5px 12px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    QPushButton#chipCamara:hover {
+        background: #F1F5F9;
+        border-color: #94A3B8;
+        color: #0F172A;
+    }
+    QPushButton#chipCamara:checked {
+        background: #1E54B7;
+        color: #FFFFFF;
+        border: 1px solid #1E54B7;
+        font-weight: 700;
+    }
 
     QPushButton#btnToggle {
         background: #1E54B7; color: #FFFFFF; border: none;
@@ -506,6 +591,16 @@ class ReconocimientoMixin:
         self.btn_auto_toggle.setProperty("activo", bool(self.auto_activo))
         _repolish(self.btn_auto_toggle)
 
+    def _actualizar_iconos_chips_auto(self):
+        """Cambia el ícono USB a blanco cuando el chip está activo."""
+        if not hasattr(self, "grupo_camaras_auto"):
+            return
+        for btn in self.grupo_camaras_auto.buttons():
+            idx = self.grupo_camaras_auto.id(btn)
+            if idx > 0:
+                color = "#FFFFFF" if btn.isChecked() else "#64748B"
+                btn.setIcon(_icono_usb(color, 14))
+
     def iniciar_auto_deteccion(self):
         if self.auto_activo:
             return
@@ -520,15 +615,20 @@ class ReconocimientoMixin:
                 QTimer.singleShot(250, self._reintentar_inicio_camara)
             return
 
+        indice_camara = self.grupo_camaras_auto.checkedId()
+        if indice_camara < 0:
+            indice_camara = 0
+
         self.auto_activo = True
         self.auto_ultimo_id = None
         self._auto_reset_ficha()
         self._pintar_toggle()
-        self.auto_visor.mostrar_mensaje("Abriendo la cámara…")
-        self.auto_estado.setText("Abriendo la cámara…")
+        nombre_cam = "integrada (0)" if indice_camara == 0 else f"USB {indice_camara}"
+        self.auto_visor.mostrar_mensaje(f"Abriendo cámara {nombre_cam}…")
+        self.auto_estado.setText(f"Abriendo cámara {nombre_cam}…")
         self.auto_estado.set_tono("activo")
 
-        camara = HiloCamara((0,))
+        camara = HiloCamara((int(indice_camara),))
         camara.abierta.connect(self._auto_camara_abierta)
         camara.fallo.connect(self._auto_camara_fallo)
         camara.cuadro.connect(self._auto_mostrar_cuadro)
@@ -688,6 +788,10 @@ class ReconocimientoMixin:
         self._auto_poner_tono("neutro")
         self.auto_resultado.setText("Sin identificación")
         self.auto_subtitulo.setText("Esperando detección de rostro…")
+        self.lbl_ficha_avatar.setPixmap(QPixmap())
+        self.lbl_ficha_avatar.setText("?")
+        self.lbl_ficha_avatar.setStyleSheet("")
+        self._foto_ficha_id = None
         self.pila_ficha.setCurrentIndex(0)
         self._auto_anim_pausa.stop()
         self.barra_pausa.set_fraccion(0.0)
@@ -715,6 +819,9 @@ class ReconocimientoMixin:
             f"background: {fondo}; color: {texto}; border-radius: 40px;"
             "font-size: 28px; font-weight: 800;"
         )
+        self.lbl_ficha_avatar.setPixmap(QPixmap())
+        self.lbl_ficha_avatar.setText(_iniciales(nombre))
+        self._cargar_foto_ficha(data.get("id_postulante"))
         self.auto_titulo.setText(nombre)
         self.lbl_ficha_ci.setVisible(bool(ci))
         self.lbl_ficha_ci.setText(f"CI {ci}")
@@ -734,6 +841,57 @@ class ReconocimientoMixin:
         self.lbl_ficha_hora.setText(_formatear_hora(hora) if hora else "—")
 
         self.pila_ficha.setCurrentIndex(1)
+
+    def _cargar_foto_ficha(self, id_postulante):
+        """Descarga la foto identificada sin bloquear la detección facial."""
+        self._foto_ficha_id = id_postulante
+        if not id_postulante:
+            return
+
+        url = f"{self.api_base_url}/marcaciones/postulantes/{id_postulante}/imagen"
+        app_key = AppConfig.get_app_key()
+        headers = {"X-App-Key": app_key} if app_key else {}
+
+        def descargar():
+            import requests
+            respuesta = requests.get(url, headers=headers, timeout=5)
+            if respuesta.status_code == 404:
+                return None
+            respuesta.raise_for_status()
+            return respuesta.content
+
+        self._foto_ficha_entrega = _ejecutar_en_hilo(
+            descargar,
+            lambda contenido, error: self._mostrar_foto_ficha(
+                id_postulante, contenido, error, url
+            ),
+        )
+
+    def _mostrar_foto_ficha(self, id_postulante, contenido, error, url):
+        if error:
+            log.warning(
+                "No se pudo cargar la foto del postulante %s desde %s: %s",
+                id_postulante, url, error,
+            )
+            return
+        if id_postulante != getattr(self, "_foto_ficha_id", None) or not contenido:
+            return
+
+        imagen = QImage.fromData(contenido)
+        if imagen.isNull():
+            log.warning("La foto del postulante %s no es una imagen válida", id_postulante)
+            return
+
+        lado = min(self.lbl_ficha_avatar.width(), self.lbl_ficha_avatar.height())
+        pixmap = QPixmap.fromImage(imagen).scaled(
+            lado, lado, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+        )
+        self.lbl_ficha_avatar.setStyleSheet(
+            "background: #E2E8F0; border-radius: 40px;"
+        )
+        self.lbl_ficha_avatar.setText("")
+        self.lbl_ficha_avatar.setAlignment(Qt.AlignCenter)
+        self.lbl_ficha_avatar.setPixmap(pixmap)
 
     # ══════════════════════ INTERFAZ ══════════════════════
     def _crear_tile(self, etiqueta, destacado=False):
@@ -765,6 +923,55 @@ class ReconocimientoMixin:
         lay.addWidget(titulo)
         lay.addWidget(nota)
 
+        # ── Barra moderna de selección de cámaras (Píldoras de 1 clic) ──
+        barra_camaras = QFrame()
+        barra_camaras.setObjectName("barraCamaras")
+        fila_camara = QHBoxLayout(barra_camaras)
+        fila_camara.setContentsMargins(12, 8, 12, 8)
+        fila_camara.setSpacing(8)
+
+        icono_lbl = QLabel()
+        icono_lbl.setPixmap(_icono_camara("#475569", 20, 16).pixmap(20, 16))
+        fila_camara.addWidget(icono_lbl)
+
+        etiqueta_camara = QLabel("Dispositivo:")
+        etiqueta_camara.setObjectName("lblFuente")
+        fila_camara.addWidget(etiqueta_camara)
+
+        self.grupo_camaras_auto = QButtonGroup(self)
+        self.grupo_camaras_auto.setExclusive(True)
+
+        opciones_camara = [
+            (0, "Integrada (0)", False),
+            (1, "USB 1", True),
+            (2, "USB 2", True),
+            (3, "USB 3", True),
+        ]
+
+        for idx, texto, es_usb in opciones_camara:
+            btn_chip = QPushButton(texto)
+            btn_chip.setObjectName("chipCamara")
+            btn_chip.setCheckable(True)
+            btn_chip.setCursor(Qt.PointingHandCursor)
+            btn_chip.setFocusPolicy(Qt.NoFocus)
+            btn_chip.setMinimumHeight(30)
+            if es_usb:
+                btn_chip.setIcon(_icono_usb("#64748B", 14))
+                btn_chip.setIconSize(QSize(14, 14))
+                btn_chip.setToolTip(f"Usar cámara externa USB (Puerto {idx})")
+            else:
+                btn_chip.setToolTip("Usar cámara integrada del equipo (Puerto 0)")
+
+            if idx == 0:
+                btn_chip.setChecked(True)
+
+            self.grupo_camaras_auto.addButton(btn_chip, idx)
+            fila_camara.addWidget(btn_chip)
+
+        self.grupo_camaras_auto.idClicked.connect(self._camara_seleccionada)
+        fila_camara.addStretch()
+        lay.addWidget(barra_camaras)
+
         self.auto_visor = VisorCamara()
         lay.addWidget(self.auto_visor, 1)
 
@@ -786,6 +993,24 @@ class ReconocimientoMixin:
         fila.addWidget(self.btn_auto_toggle)
         lay.addLayout(fila)
         return tarjeta
+
+    def _camara_seleccionada(self, indice):
+        self._actualizar_iconos_chips_auto()
+        if getattr(self, "_indice_camara_auto", 0) == indice:
+            return
+        self._indice_camara_auto = indice
+
+        # Si la detección estaba corriendo, cambia en caliente a la nueva cámara
+        # usando la cola segura de HiloCamara (_camara_cerrandose) sin congelar la UI.
+        if getattr(self, "auto_activo", False):
+            self.detener_auto_deteccion()
+            self.iniciar_auto_deteccion()
+        else:
+            nombre_cam = "integrada (0)" if indice == 0 else f"USB {indice}"
+            self.auto_estado.setText(
+                f"Cámara {nombre_cam} seleccionada. Pulsa «Iniciar detección» para abrirla."
+            )
+            self.auto_estado.set_tono("neutro")
 
     def _crear_ficha(self):
         ficha = QFrame()
@@ -837,7 +1062,9 @@ class ReconocimientoMixin:
         lbl_espera = QLabel("Esperando rostro")
         lbl_espera.setObjectName("esperaTitulo")
         lbl_espera.setAlignment(Qt.AlignCenter)
-        lbl_espera_sub = QLabel("Los datos del postulante aparecerán aquí cuando sea identificado.")
+        lbl_espera_sub = QLabel(
+            "Los datos del postulante aparecerán aquí cuando sea identificado."
+        )
         lbl_espera_sub.setObjectName("esperaSub")
         lbl_espera_sub.setAlignment(Qt.AlignCenter)
         lbl_espera_sub.setWordWrap(True)
@@ -953,6 +1180,7 @@ class ReconocimientoMixin:
 
         # Estado interno del reconocimiento automático
         self.auto_activo = False
+        self._indice_camara_auto = 0
         self.auto_camara = None
         self._camara_cerrandose = None
         self._reintento_camara = False

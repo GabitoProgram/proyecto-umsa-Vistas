@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QMessageBox,
     QLineEdit, QSpinBox, QFileDialog, QInputDialog, QListWidget, QListWidgetItem,
-    QScrollArea, QSizePolicy
+    QScrollArea, QSizePolicy, QDialog, QComboBox
 )
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -90,6 +90,17 @@ def _pixmap_icono(nombre, color, ancho=26, alto=20):
         punta.lineTo(12.2, 7.4)
         p.drawPath(punta)
 
+    elif nombre == "editar":
+        lapiz = QPainterPath()
+        lapiz.moveTo(11.5, 3.2)
+        lapiz.lineTo(14.8, 6.5)
+        lapiz.lineTo(6.8, 14.5)
+        lapiz.lineTo(3.2, 14.8)
+        lapiz.lineTo(3.5, 11.2)
+        lapiz.closeSubpath()
+        p.drawPath(lapiz)
+        p.drawLine(QPointF(9.8, 4.9), QPointF(13.1, 8.2))
+
     p.end()
     return pm
 
@@ -113,6 +124,171 @@ def _repolish(widget):
     widget.update()
 
 
+# ----------------------------------------------------------------------
+# Diálogo estilizado para cambiar Aula y Asiento
+# ----------------------------------------------------------------------
+class DialogEditarAsignacion(QDialog):
+    ESTILOS_DLG = """
+        QDialog { background: #F8FAFC; }
+        QLabel { background: transparent; border: none; }
+        QFrame#cardDlg {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 14px;
+        }
+        QLabel#dlgTitulo { color: #0F2C59; font-size: 18px; font-weight: 800; }
+        QLabel#dlgSub    { color: #64748B; font-size: 13px; font-weight: 600; }
+        QLabel#lblCampo  { color: #334155; font-size: 12px; font-weight: 700; }
+
+        QComboBox#comboDlg {
+            background: #FFFFFF;
+            border: 1px solid #CBD5E1;
+            border-radius: 10px;
+            padding: 6px 12px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #0F172A;
+        }
+        QComboBox#comboDlg:hover { border-color: #94A3B8; }
+        QComboBox#comboDlg:focus { border: 2px solid #1E54B7; }
+
+        QPushButton#btnPrimario {
+            background: #1E54B7; color: #FFFFFF; border: none;
+            border-radius: 10px; padding: 0 18px;
+            font-size: 13px; font-weight: 700;
+        }
+        QPushButton#btnPrimario:hover    { background: #17449A; }
+        QPushButton#btnPrimario:pressed  { background: #12367D; }
+        QPushButton#btnPrimario:disabled { background: #A9BEE3; color: #FFFFFF; }
+
+        QPushButton#btnSecundario {
+            background: #FFFFFF; color: #334155;
+            border: 1px solid #CBD5E1; border-radius: 10px; padding: 0 16px;
+            font-size: 13px; font-weight: 700;
+        }
+        QPushButton#btnSecundario:hover { background: #F1F5F9; }
+    """
+
+    def __init__(self, parent, postulante, aulas, api_base_url, headers):
+        super().__init__(parent)
+        self.setWindowTitle("Editar aula y asiento")
+        self.setStyleSheet(self.ESTILOS_DLG)
+        self.setFixedSize(420, 310)
+        self.postulante = postulante
+        self.aulas = aulas
+        self.api_base_url = api_base_url
+        self.headers = headers
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(14)
+
+        lbl_t = QLabel("Editar aula y asiento")
+        lbl_t.setObjectName("dlgTitulo")
+        nombre = postulante.get("nombre_completo") or "Postulante"
+        ci = postulante.get("ci") or ""
+        lbl_s = QLabel(f"{nombre}   ·   CI {ci}" if ci else nombre)
+        lbl_s.setObjectName("dlgSub")
+        lbl_s.setWordWrap(True)
+        lay.addWidget(lbl_t)
+        lay.addWidget(lbl_s)
+
+        card = QFrame()
+        card.setObjectName("cardDlg")
+        form = QVBoxLayout(card)
+        form.setContentsMargins(16, 14, 16, 16)
+        form.setSpacing(10)
+
+        lbl_aula = QLabel("AULA ASIGNADA")
+        lbl_aula.setObjectName("lblCampo")
+        lbl_aula.setFont(_fuente_etiqueta(10, 1.2))
+        self.combo_aula = QComboBox()
+        self.combo_aula.setObjectName("comboDlg")
+        self.combo_aula.setMinimumHeight(38)
+
+        actual_aula = postulante.get("nombre_aula")
+        idx_inicial = 0
+        for i, a in enumerate(self.aulas):
+            self.combo_aula.addItem(str(a.get("nombre", "")), userData=a)
+            if a.get("nombre") == actual_aula:
+                idx_inicial = i
+
+        lbl_asiento = QLabel("NÚMERO DE ASIENTO")
+        lbl_asiento.setObjectName("lblCampo")
+        lbl_asiento.setFont(_fuente_etiqueta(10, 1.2))
+        self.combo_asiento = QComboBox()
+        self.combo_asiento.setObjectName("comboDlg")
+        self.combo_asiento.setMinimumHeight(38)
+
+        form.addWidget(lbl_aula)
+        form.addWidget(self.combo_aula)
+        form.addSpacing(4)
+        form.addWidget(lbl_asiento)
+        form.addWidget(self.combo_asiento)
+        lay.addWidget(card, 1)
+
+        botones = QHBoxLayout()
+        botones.addStretch()
+        btn_cancelar = QPushButton("Cancelar")
+        btn_cancelar.setObjectName("btnSecundario")
+        btn_cancelar.setMinimumHeight(38)
+        btn_cancelar.setCursor(Qt.PointingHandCursor)
+        btn_cancelar.clicked.connect(self.reject)
+
+        self.btn_guardar = QPushButton("Guardar cambios")
+        self.btn_guardar.setObjectName("btnPrimario")
+        self.btn_guardar.setMinimumHeight(38)
+        self.btn_guardar.setCursor(Qt.PointingHandCursor)
+        self.btn_guardar.clicked.connect(self.accept)
+
+        botones.addWidget(btn_cancelar)
+        botones.addWidget(self.btn_guardar)
+        lay.addLayout(botones)
+
+        self.combo_aula.currentIndexChanged.connect(self._cargar_asientos_aula)
+        self.combo_aula.setCurrentIndex(idx_inicial)
+        self._cargar_asientos_aula()
+
+    def _cargar_asientos_aula(self):
+        self.combo_asiento.clear()
+        aula = self.combo_aula.currentData()
+        if not aula:
+            self.btn_guardar.setEnabled(False)
+            return
+        try:
+            respuesta = requests.get(
+                f"{self.api_base_url}/admin/aulas/{aula['id_aula']}/asientos",
+                headers=self.headers,
+                timeout=5,
+            )
+            if respuesta.status_code != 200:
+                self.btn_guardar.setEnabled(False)
+                return
+            asientos = [a for a in respuesta.json() if a.get("habilitado", True)]
+        except (requests.RequestException, ValueError):
+            self.btn_guardar.setEnabled(False)
+            return
+
+        asientos.sort(key=lambda a: a.get("numero_asiento", 0))
+        if not asientos:
+            self.combo_asiento.addItem("Sin asientos habilitados", userData=None)
+            self.btn_guardar.setEnabled(False)
+            return
+
+        actual_asiento = self.postulante.get("numero_asiento")
+        idx_asiento = 0
+        for i, a in enumerate(asientos):
+            num = a.get("numero_asiento")
+            self.combo_asiento.addItem(f"Asiento #{num}", userData=a)
+            if num == actual_asiento:
+                idx_asiento = i
+        self.combo_asiento.setCurrentIndex(idx_asiento)
+        self.btn_guardar.setEnabled(True)
+
+    def seleccion(self):
+        return self.combo_aula.currentData(), self.combo_asiento.currentData()
+
+
 class ExamenWorkspaceView(QWidget):
     volver = Signal()
 
@@ -126,9 +302,9 @@ class ExamenWorkspaceView(QWidget):
         QLabel { background: transparent; border: none; }
 
         /* ---------- Encabezado ---------- */
-        QLabel#breadcrumb  { color: #64748B; font-size: 12px; font-weight: 600; }
+        QLabel#breadcrumb   { color: #64748B; font-size: 12px; font-weight: 600; }
         QLabel#paginaTitulo { color: #0F2C59; font-size: 26px; font-weight: 800; }
-        QLabel#paginaSub   { color: #64748B; font-size: 13px; }
+        QLabel#paginaSub    { color: #64748B; font-size: 13px; }
 
         QFrame#panel {
             background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 14px;
@@ -156,12 +332,12 @@ class ExamenWorkspaceView(QWidget):
         /* ---------- Botones ---------- */
         QPushButton#btnPrimario {
             background: #1E54B7; color: #FFFFFF; border: none;
-            border-radius: 10px; padding: 0 18px;
+            border-radius: 10px; padding: 0 16px;
             font-size: 13px; font-weight: 700;
         }
         QPushButton#btnPrimario:hover    { background: #17449A; }
         QPushButton#btnPrimario:pressed  { background: #12367D; }
-        QPushButton#btnPrimario:disabled { background: #A9BEE3; color: #FFFFFF; }
+        QPushButton#btnPrimario:disabled { background: #CBD5E1; color: #64748B; }
 
         QPushButton#btnSecundario {
             background: #FFFFFF; color: #334155;
@@ -286,11 +462,9 @@ class ExamenWorkspaceView(QWidget):
         self.tolerancia_actual = self.examen.get("tolerancia_minutos", 10)
         self.aulas_disponibles = []
         self.postulantes_examen = []
+        self.asignaciones_examen = []
         self.carrera_nombre = ""
         self.init_ui()
-        # Los datos se piden DESPUÉS de mostrar la pantalla: antes se hacían
-        # varias peticiones seguidas al construirla y la ventana se quedaba
-        # congelada hasta que el servidor respondía a todas.
         QTimer.singleShot(0, self._cargar_inicial)
 
     def get_auth_headers(self):
@@ -349,7 +523,7 @@ class ExamenWorkspaceView(QWidget):
         tabla.setEditTriggers(QTableWidget.NoEditTriggers)
         tabla.setSelectionBehavior(QTableWidget.SelectRows)
         tabla.verticalHeader().setVisible(False)
-        tabla.verticalHeader().setDefaultSectionSize(46)
+        tabla.verticalHeader().setDefaultSectionSize(52)
         tabla.horizontalHeader().setHighlightSections(False)
         tabla.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
@@ -390,7 +564,7 @@ class ExamenWorkspaceView(QWidget):
         barra_sup.setSpacing(8)
         btn_volver = self._boton("Volver", "fantasma", "atras")
         btn_volver.clicked.connect(self.volver.emit)
-        lbl_ruta = QLabel("Académico  ›  Gestiones  ›  Carreras  ›  Exámenes  ›  Espacio del examen")
+        lbl_ruta = QLabel("Académico   ›   Gestiones   ›   Carreras   ›   Exámenes   ›   Espacio del examen")
         lbl_ruta.setObjectName("breadcrumb")
         barra_sup.addWidget(btn_volver)
         barra_sup.addWidget(lbl_ruta)
@@ -440,7 +614,7 @@ class ExamenWorkspaceView(QWidget):
         chips.addWidget(self._chip("FECHA", str(self.examen.get("fecha", "—"))), 1)
         chips.addWidget(self._chip(
             "HORARIO",
-            f"{self.examen.get('hora_inicio', '—')} - {self.examen.get('hora_fin', '—')}"
+            f"{self.examen.get('hora_inicio', '—')} – {self.examen.get('hora_fin', '—')}"
         ), 1)
         self.chip_carrera = self._chip("CARRERA", "—", guardar_valor=True)
         chips.addWidget(self.chip_carrera, 1)
@@ -543,27 +717,23 @@ class ExamenWorkspaceView(QWidget):
         self.lbl_contador = QLabel("0 postulantes")
         self.lbl_contador.setObjectName("chip")
 
-        btn_manual = self._boton("Inscripción manual", "primario", "mas", alto=44)
-        btn_manual.clicked.connect(self.inscribir_manual)
-        btn_excel = self._boton("Carga masiva Excel", "exito", "subir", alto=44)
-        btn_excel.clicked.connect(self.importar_postulantes_excel)
-
         bar.addWidget(self.txt_buscar, stretch=1)
         bar.addWidget(self.lbl_contador)
-        bar.addWidget(btn_manual)
-        bar.addWidget(btn_excel)
         l.addLayout(bar)
 
-        self.tabla_postulantes = QTableWidget(0, 7)
+        self.tabla_postulantes = QTableWidget(0, 8)
         self._preparar_tabla(self.tabla_postulantes)
         self.tabla_postulantes.setHorizontalHeaderLabels([
-            "C.I.", "Postulante", "Inscripción", "Aula", "Asiento", "Huellas", "Rostro"
+            "C.I.", "Postulante", "Inscripción", "Aula", "Asiento", "Huellas", "Rostro", "Acción"
         ])
         header = self.tabla_postulantes.horizontalHeader()
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setSectionResizeMode(3, QHeaderView.Stretch)
         for col in (0, 2, 4, 5, 6):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        # Ancho fijo amplio para la columna Acción así jamás recorta el botón
+        header.setSectionResizeMode(7, QHeaderView.Fixed)
+        self.tabla_postulantes.setColumnWidth(7, 175)
         self.tabla_postulantes.setMinimumHeight(360)
         l.addWidget(self._en_panel(self.tabla_postulantes), stretch=1)
         return w
@@ -664,6 +834,19 @@ class ExamenWorkspaceView(QWidget):
         rojo = QBrush(QColor("#B91C1C"))
         self.tabla_postulantes.setRowCount(len(filas))
         for fila, postulante in enumerate(filas):
+            id_asignacion = postulante.get("id_asignacion")
+            if not id_asignacion:
+                id_asignacion = next(
+                    (
+                        asignacion.get("id_asignacion")
+                        for asignacion in self.asignaciones_examen
+                        if asignacion.get("id_inscripcion") == postulante.get("id_inscripcion")
+                    ),
+                    None,
+                )
+                if id_asignacion:
+                    postulante = dict(postulante)
+                    postulante["id_asignacion"] = id_asignacion
             huellas = [h for h in postulante.get("huellas", []) if h.get("habilitada")]
             aula = postulante.get("nombre_aula") or "sin asignar"
             asiento = postulante.get("numero_asiento")
@@ -699,6 +882,67 @@ class ExamenWorkspaceView(QWidget):
                 if columna == 6:
                     item.setForeground(verde if postulante.get("rostro_habilitado") else gris)
                 self.tabla_postulantes.setItem(fila, columna, item)
+
+            # Botón con el mismo estilo exacto de "Generar reporte" (btnPrimario)
+            celda = QWidget()
+            lay_celda = QHBoxLayout(celda)
+            lay_celda.setContentsMargins(8, 7, 8, 7)
+
+            boton = self._boton("Editar asiento", "primario", "editar", alto=36)
+            boton.setMinimumWidth(150)
+            boton.clicked.connect(
+                lambda _checked=False, p=postulante: self.editar_asignacion_postulante(p)
+            )
+            lay_celda.addWidget(boton)
+            self.tabla_postulantes.setCellWidget(fila, 7, celda)
+
+    def editar_asignacion_postulante(self, postulante):
+        id_asignacion = postulante.get("id_asignacion")
+        if not id_asignacion:
+            QMessageBox.information(
+                self, "Sin asignación",
+                "Este postulante todavía no tiene aula ni asiento asignados.",
+            )
+            return
+
+        if not self.aulas_disponibles:
+            self.cargar_aulas_sorteo()
+        aulas = self.aulas_disponibles
+        if not aulas:
+            QMessageBox.warning(self, "Aulas", "No hay aulas activas disponibles.")
+            return
+
+        dlg = DialogEditarAsignacion(
+            self, postulante, aulas, self.api_base_url, self.get_auth_headers()
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        aula, asiento = dlg.seleccion()
+        if not aula or not asiento:
+            return
+
+        try:
+            respuesta = requests.patch(
+                f"{self.api_base_url}/asignaciones/{id_asignacion}",
+                json={
+                    "id_aula": aula["id_aula"],
+                    "id_asiento": asiento["id_asiento"],
+                },
+                headers=self.get_auth_headers(),
+                timeout=6,
+            )
+            if respuesta.status_code == 200:
+                self.cargar_postulantes_examen()
+                self.cargar_asignaciones()
+                QMessageBox.information(
+                    self, "Asignación actualizada",
+                    "El aula y el asiento se actualizaron correctamente.",
+                )
+            else:
+                detalle = respuesta.json().get("detail", "No se pudo actualizar la asignación.")
+                QMessageBox.warning(self, "Asignación", str(detalle))
+        except (requests.RequestException, ValueError) as error:
+            QMessageBox.critical(self, "Error de red", str(error))
 
     # ══════════════════ PESTAÑA AULAS Y SORTEO ══════════════════
     def _crear_tab_aulas_sorteo(self):
@@ -920,6 +1164,7 @@ class ExamenWorkspaceView(QWidget):
             if respuesta.status_code != 200:
                 return
             asignaciones = respuesta.json()
+            self.asignaciones_examen = asignaciones
             self.tabla_asignaciones.setRowCount(len(asignaciones))
             for fila, asignacion in enumerate(asignaciones):
                 valores = (
@@ -933,7 +1178,9 @@ class ExamenWorkspaceView(QWidget):
                     if columna in (0, 2):
                         item.setTextAlignment(Qt.AlignCenter)
                     self.tabla_asignaciones.setItem(fila, columna, item)
+            self.filtrar_postulantes(self.txt_buscar.text())
         except requests.RequestException:
+            self.asignaciones_examen = []
             self.tabla_asignaciones.setRowCount(0)
 
     def ejecutar_sorteo(self):

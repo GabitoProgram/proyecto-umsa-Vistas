@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from desktop.config.app_config import AppConfig
 from desktop.views.checkin.workers import (
     IdentificacionHuellaController,
+    _ejecutar_en_hilo,
     liberar_lector_compartido,
 )
 from desktop.biometria import (
@@ -566,7 +567,10 @@ class MarcacionMixin:
             f"background: {fondo}; color: {texto}; border-radius: 48px;"
             "font-size: 34px; font-weight: 800;"
         )
+        self.lbl_res_avatar.setPixmap(QPixmap())
+        self.lbl_res_avatar.setText(_iniciales(nombre))
         self.lbl_res_nombre.setText(nombre)
+        self._cargar_foto_postulante(data.get("id_postulante") or candidato.get("id_postulante"))
 
         self.lbl_res_ci.setVisible(bool(ci))
         self.lbl_res_ci.setText(f"CI {ci}")
@@ -584,11 +588,66 @@ class MarcacionMixin:
         self.lbl_res_aula.setText(str(data.get("aula") or "—"))
         asiento = data.get("numero_asiento")
         self.lbl_res_asiento.setText(str(asiento) if asiento else "—")
-        hora = data.get("hora_ingreso")
+        # La marcación por huella devuelve ``fecha_hora``; el flujo facial
+        # también puede devolver ``hora_ingreso`` ya formateada.
+        hora = data.get("hora_ingreso") or data.get("fecha_hora")
         self.lbl_res_hora.setText(_formatear_hora(hora) if hora else "—")
 
         self.pila_cuerpo.setCurrentIndex(1)
         self._mostrar_tarjeta(tono)
+
+    def _cargar_foto_postulante(self, id_postulante):
+        """Carga la foto sin bloquear la interfaz y conserva las iniciales como respaldo."""
+        self._foto_postulante_id = id_postulante
+        if not id_postulante:
+            log.warning("No se recibió id_postulante; se muestran iniciales en el resultado")
+            return
+
+        url = f"{self.api_base_url}/marcaciones/postulantes/{id_postulante}/imagen"
+        app_key = AppConfig.get_app_key()
+        headers = {"X-App-Key": app_key} if app_key else {}
+
+        def descargar():
+            import requests
+            respuesta = requests.get(url, headers=headers, timeout=5)
+            if respuesta.status_code == 404:
+                return None
+            respuesta.raise_for_status()
+            return respuesta.content
+
+        self._foto_entrega = _ejecutar_en_hilo(
+            descargar,
+            lambda contenido, error: self._mostrar_foto_postulante(
+                id_postulante, contenido, error, url
+            ),
+        )
+
+    def _mostrar_foto_postulante(self, id_postulante, contenido, error, url):
+        if error:
+            log.warning("No se pudo cargar la foto del postulante %s desde %s: %s",
+                        id_postulante, url, error)
+            return
+        if id_postulante != getattr(self, "_foto_postulante_id", None):
+            return
+        if not contenido:
+            log.info("El postulante %s no tiene una foto facial almacenada", id_postulante)
+            return
+
+        imagen = QImage.fromData(contenido)
+        if imagen.isNull():
+            log.warning("La foto del postulante %s no es una imagen válida", id_postulante)
+            return
+
+        lado = min(self.lbl_res_avatar.width(), self.lbl_res_avatar.height())
+        pixmap = QPixmap.fromImage(imagen).scaled(
+            lado, lado, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+        )
+        self.lbl_res_avatar.setStyleSheet(
+            "background: #E2E8F0; border-radius: 48px;"
+        )
+        self.lbl_res_avatar.setText("")
+        self.lbl_res_avatar.setAlignment(Qt.AlignCenter)
+        self.lbl_res_avatar.setPixmap(pixmap)
 
     def mostrar_resultado(self, exito: bool, titulo: str, detalle: str, asiento: str,
                           tono: str = None):
@@ -628,6 +687,10 @@ class MarcacionMixin:
         self.lbl_res_detalle.setText("")
         self.lbl_res_pie.setText("")
         self.lbl_res_asiento.setText("")
+        self.lbl_res_avatar.setPixmap(QPixmap())
+        self.lbl_res_avatar.setText("?")
+        self.lbl_res_avatar.setStyleSheet("")
+        self._foto_postulante_id = None
         self.panel_espera.setVisible(True)
 
     def restaurar_panel_espera(self):
