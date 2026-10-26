@@ -155,6 +155,9 @@ class MainDashboardWindow(
 ):
     cerrar_sesion = Signal()
 
+    # Las subclases (panel auxiliar) solo cambian este texto.
+    TITULO_VENTANA = "Sistema Biométrico UMSA - Panel de Administración"
+
     # Los estilos usan objectName: así NO se heredan a las etiquetas internas
     # (QLabel es subclase de QFrame) ni a las páginas del contenido.
     ESTILOS_SIDEBAR = """
@@ -228,10 +231,12 @@ class MainDashboardWindow(
         self.token_data = token_data or {}
         self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.rol = self.token_data.get("rol", "ADMIN")
-        self.setWindowTitle("Sistema Biométrico UMSA - Panel de Administración")
+        self.setWindowTitle(self.TITULO_VENTANA)
         self.setMinimumSize(1200, 750)
         self.init_ui()
-        self.showMaximized()
+        # No se llama a showMaximized() aquí: la ventana se muestra una sola
+        # vez, desde AppController, cuando ya está completamente construida.
+        # Mostrarla dentro del constructor causaba el destello al iniciar sesión.
 
     # ------------------------------------------------------------------
     # Construcción
@@ -261,8 +266,9 @@ class MainDashboardWindow(
         self.content_stack.addWidget(self._crear_academico_view())
         self.content_stack.addWidget(self._crear_aulas_view())
 
-        self.content_stack.addWidget(self._crear_usuarios_view())
-        self.content_stack.addWidget(self._crear_auditoria_view())
+        if self.rol == "SUPER_ADMIN":
+            self.content_stack.addWidget(self._crear_usuarios_view())
+            self.content_stack.addWidget(self._crear_auditoria_view())
 
         layout.addWidget(self.content_stack, 1)
 

@@ -2,11 +2,13 @@ import requests
 from PySide6.QtWidgets import QStackedWidget, QMainWindow, QMessageBox
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
-from config.app_config import AppConfig
-from api.client import api
-from views.checkin_view import CheckInView
-from views.login_view import LoginView
-from views.main_window import MainDashboardWindow
+from desktop.config.app_config import AppConfig
+from desktop.api.client import api
+from desktop.views.checkin_view import CheckInView
+from desktop.views.login_view import LoginView
+from desktop.views.main_window import MainDashboardWindow
+from desktop.views.admin.auxiliar.main_window import AuxiliarDashboardWindow
+
 
 class _EmisorExamen(QObject):
     listo = Signal(int, object, str)  # código HTTP (0 si falló), datos, error
@@ -36,6 +38,8 @@ class _TareaExamen(QRunnable):
 
 
 class AppController(QMainWindow):
+    INTERVALO_SONDEO_MS = 30000
+
     def __init__(self, api_base_url=None):
         super().__init__()
         self.api_base_url = api_base_url or AppConfig.get_api_base_url()
@@ -69,11 +73,15 @@ class AppController(QMainWindow):
 
     def iniciar(self):
         if not AppConfig.get_app_key():
-            QMessageBox.critical(self, "Configuración inválida", "No existe APP_CLIENT_KEY en la configuración del cliente.")
+            QMessageBox.critical(
+                self,
+                "Configuración inválida",
+                "No existe APP_CLIENT_KEY en la configuración del cliente.",
+            )
             self.close()
             return
         self.evaluar_examen_activo()
-        self.check_timer.start(30000)
+        self.check_timer.start(self.INTERVALO_SONDEO_MS)
         self.show()
 
     def evaluar_examen_activo(self):
@@ -106,8 +114,9 @@ class AppController(QMainWindow):
                 self.mostrar_login()
         elif status == 401:
             QMessageBox.critical(
-                self, "Clave Inválida",
-                "La clave configurada fue dada de baja o no es válida."
+                self,
+                "Clave Inválida",
+                "La clave configurada fue dada de baja o no es válida.",
             )
             self.mostrar_login()
         elif status == 0:  # sin conexión con el servidor
@@ -124,14 +133,22 @@ class AppController(QMainWindow):
         self.stack.setCurrentWidget(self.login_view)
 
     def abrir_panel_administrativo(self, token_data):
-        self.mostrar_login()
+        # Construir la ventana SIN mostrarla; se muestra una sola vez abajo.
         if not self.admin_window:
-            self.admin_window = MainDashboardWindow(
+            ventana_cls = (
+                MainDashboardWindow
+                if token_data.get("rol") == "SUPER_ADMIN"
+                else AuxiliarDashboardWindow
+            )
+            self.admin_window = ventana_cls(
                 token_data=token_data,
                 api_base_url=self.api_base_url,
             )
             self.admin_window.cerrar_sesion.connect(self.cerrar_sesion)
-        self.admin_window.show()
+
+        self.check_timer.stop()  # el sondeo no hace falta con el panel abierto
+        self.checkin_view.detener_estacion()
+        self.admin_window.showMaximized()
         self.hide()
 
     def cerrar_sesion(self):
@@ -144,5 +161,7 @@ class AppController(QMainWindow):
         api.jwt_token = None
         api.current_user = None
         self.login_view.limpiar_formulario()
+        self.mostrar_login()
+        self.check_timer.start(self.INTERVALO_SONDEO_MS)
         self.show()
         self.evaluar_examen_activo()

@@ -1,21 +1,10 @@
 import requests
-from datetime import date
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QStackedWidget, QFrame, QComboBox, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QInputDialog, QLineEdit, QFileDialog, QDialog, QFormLayout, QCheckBox, QScrollArea, QDialogButtonBox
+    QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QComboBox,
+    QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
+    QDialog, QFormLayout, QCheckBox, QDialogButtonBox,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QImage, QPixmap
-import cv2
-
-from desktop.views.dialogs.postulante_dialog import (
-    DialogEditarPostulante,
-    DialogNuevoPostulanteGestion,
-)
-from desktop.views.dialogs.gestion_dialog import DialogGestion
-from desktop.views.dialogs.carrera_dialog import DialogCarrera
-from desktop.views.dialogs.examen_dialog import DialogExamen
-from desktop.views.dialogs.captura_rostro_dialog import DialogCapturaRostro
-from desktop.views.admin.examen_workspace_view import ExamenWorkspaceView
+from PySide6.QtCore import Qt, QTimer
 
 
 class DialogoUsuario(QDialog):
@@ -120,6 +109,22 @@ class DialogoUsuario(QDialog):
 
 
 class UsuariosMixin:
+    ESTILO_BTN_EDITAR = (
+        "QPushButton { background: #E0ECFF; color: #1D4ED8; "
+        "border: 1px solid #BFDBFE; border-radius: 5px; padding: 5px 10px; "
+        "font-weight: 600; } QPushButton:hover { background: #BFDBFE; }"
+    )
+    ESTILO_BTN_DESACTIVAR = (
+        "QPushButton { background: #FEE2E2; color: #B91C1C; "
+        "border: 1px solid #FECACA; border-radius: 5px; padding: 5px 10px; "
+        "font-weight: 600; } QPushButton:hover { background: #FECACA; }"
+    )
+    ESTILO_BTN_ACTIVAR = (
+        "QPushButton { background: #DCFCE7; color: #15803D; "
+        "border: 1px solid #BBF7D0; border-radius: 5px; padding: 5px 10px; "
+        "font-weight: 600; } QPushButton:hover { background: #BBF7D0; }"
+    )
+
     def _es_super_admin(self):
         return self.token_data.get("rol") == "SUPER_ADMIN"
 
@@ -145,7 +150,7 @@ class UsuariosMixin:
         layout.setContentsMargins(28, 28, 28, 28)
         layout.setSpacing(14)
 
-        title = QLabel("Usuarios y Roles")
+        title = QLabel("Usuarios y Roles", w)
         title.setStyleSheet("font-size: 22px; font-weight: bold; color: #0F2C59;")
 
         encabezado = QHBoxLayout()
@@ -170,15 +175,13 @@ class UsuariosMixin:
             QPushButton:hover { background-color: #E2E8F0; }
         """
 
-        btn_nuevo = QPushButton("+ Nuevo usuario")
+        btn_nuevo = QPushButton("+ Nuevo usuario", w)
         btn_nuevo.setCursor(Qt.PointingHandCursor)
         btn_nuevo.setStyleSheet(btn_style)
         btn_nuevo.clicked.connect(self.crear_usuario_panel)
+        btn_nuevo.setEnabled(self._es_super_admin())
 
-        puede_administrar = self._es_super_admin()
-        btn_nuevo.setEnabled(puede_administrar)
-
-        btn_refrescar = QPushButton("Actualizar")
+        btn_refrescar = QPushButton("Actualizar", w)
         btn_refrescar.setCursor(Qt.PointingHandCursor)
         btn_refrescar.setStyleSheet(btn_secondary)
         btn_refrescar.clicked.connect(self.cargar_usuarios_panel)
@@ -187,7 +190,7 @@ class UsuariosMixin:
         encabezado.addWidget(btn_refrescar)
         layout.addLayout(encabezado)
 
-        self.usuarios_table = QTableWidget(0, 6)
+        self.usuarios_table = QTableWidget(0, 6, w)
         self.usuarios_table.setHorizontalHeaderLabels(
             ["ID", "Usuario", "Nombre", "Rol", "Estado", "Acciones"]
         )
@@ -197,7 +200,10 @@ class UsuariosMixin:
         self.usuarios_table.verticalHeader().setDefaultSectionSize(48)
         self.usuarios_table.setEditTriggers(QTableWidget.NoEditTriggers)
         layout.addWidget(self.usuarios_table)
-        self.cargar_usuarios_panel()
+
+        # La carga se difiere: se ejecuta cuando la ventana ya está visible,
+        # no dentro del constructor (evita widgets sueltos y bloqueos al iniciar sesión).
+        QTimer.singleShot(0, self.cargar_usuarios_panel)
         return w
 
     def cargar_usuarios_panel(self):
@@ -213,6 +219,8 @@ class UsuariosMixin:
             if respuesta.status_code != 200:
                 raise ValueError(respuesta.json().get("detail", "No se pudo cargar usuarios."))
             usuarios = respuesta.json()
+
+            self.usuarios_table.setUpdatesEnabled(False)
             self.usuarios_table.setRowCount(len(usuarios))
             for fila, usuario in enumerate(usuarios):
                 self.usuarios_table.setItem(fila, 0, QTableWidgetItem(str(usuario["id_usuario"])))
@@ -230,40 +238,26 @@ class UsuariosMixin:
                 estado.setForeground(Qt.darkGreen if activo else Qt.darkRed)
                 self.usuarios_table.setItem(fila, 4, estado)
 
-                acciones = QWidget()
+                # Todos los widgets nacen con parent: nunca existen como ventanas sueltas.
+                acciones = QWidget(self.usuarios_table)
                 acciones_layout = QHBoxLayout(acciones)
                 acciones_layout.setContentsMargins(6, 5, 6, 5)
                 acciones_layout.setSpacing(6)
 
-                btn_editar = QPushButton("Editar")
+                btn_editar = QPushButton("Editar", acciones)
                 btn_editar.setCursor(Qt.PointingHandCursor)
                 btn_editar.setToolTip("Editar datos y contraseña")
-                btn_editar.setStyleSheet(
-                    "QPushButton { background: #E0ECFF; color: #1D4ED8; "
-                    "border: 1px solid #BFDBFE; border-radius: 5px; padding: 5px 10px; "
-                    "font-weight: 600; } QPushButton:hover { background: #BFDBFE; }"
-                )
+                btn_editar.setStyleSheet(self.ESTILO_BTN_EDITAR)
                 btn_editar.clicked.connect(
                     lambda _checked=False, fila=fila: self.editar_usuario_fila(fila)
                 )
 
-                btn_estado = QPushButton("Desactivar" if activo else "Activar")
+                btn_estado = QPushButton("Desactivar" if activo else "Activar", acciones)
                 btn_estado.setCursor(Qt.PointingHandCursor)
-                btn_estado.setToolTip(
-                    "Desactivar usuario" if activo else "Activar usuario"
+                btn_estado.setToolTip("Desactivar usuario" if activo else "Activar usuario")
+                btn_estado.setStyleSheet(
+                    self.ESTILO_BTN_DESACTIVAR if activo else self.ESTILO_BTN_ACTIVAR
                 )
-                if activo:
-                    btn_estado.setStyleSheet(
-                        "QPushButton { background: #FEE2E2; color: #B91C1C; "
-                        "border: 1px solid #FECACA; border-radius: 5px; padding: 5px 10px; "
-                        "font-weight: 600; } QPushButton:hover { background: #FECACA; }"
-                    )
-                else:
-                    btn_estado.setStyleSheet(
-                        "QPushButton { background: #DCFCE7; color: #15803D; "
-                        "border: 1px solid #BBF7D0; border-radius: 5px; padding: 5px 10px; "
-                        "font-weight: 600; } QPushButton:hover { background: #BBF7D0; }"
-                    )
                 btn_estado.clicked.connect(
                     lambda _checked=False, fila=fila: self.cambiar_estado_fila(fila)
                 )
@@ -273,7 +267,9 @@ class UsuariosMixin:
                 acciones_layout.addWidget(btn_editar)
                 acciones_layout.addWidget(btn_estado)
                 self.usuarios_table.setCellWidget(fila, 5, acciones)
+            self.usuarios_table.setUpdatesEnabled(True)
         except (requests.RequestException, ValueError) as error:
+            self.usuarios_table.setUpdatesEnabled(True)
             self.usuarios_table.setRowCount(0)
             QMessageBox.warning(self, "Usuarios", f"No se pudo cargar la lista: {error}")
 
@@ -300,7 +296,7 @@ class UsuariosMixin:
                 f"{self.api_base_url}/admin/usuarios/{usuario['id_usuario']}",
                 json={"activo": not activo_actual},
                 headers=self._auth_headers(),
-                timeout=5
+                timeout=5,
             )
             if respuesta.status_code == 200:
                 self.cargar_usuarios_panel()
@@ -340,7 +336,7 @@ class UsuariosMixin:
                 f"{self.api_base_url}{endpoint}",
                 json=datos,
                 headers=self._auth_headers(),
-                timeout=5
+                timeout=5,
             )
             if respuesta.status_code in (200, 201):
                 self.cargar_usuarios_panel()
@@ -350,7 +346,7 @@ class UsuariosMixin:
                     "Usuario actualizado correctamente." if usuario else "Usuario creado correctamente.",
                 )
             else:
-                detalle = respuesta.json().get("detail", "No se pudo crear el usuario.")
+                detalle = respuesta.json().get("detail", "No se pudo guardar el usuario.")
                 QMessageBox.warning(self, "Usuarios", str(detalle))
         except (requests.RequestException, ValueError) as error:
             QMessageBox.critical(self, "Usuarios", f"Error de conexión: {error}")

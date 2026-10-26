@@ -1,58 +1,81 @@
 import requests
-from datetime import date
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QStackedWidget, QFrame, QComboBox, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QInputDialog, QLineEdit, QFileDialog, QDialog, QFormLayout, QCheckBox, QScrollArea
+    QWidget, QHBoxLayout, QPushButton, QMessageBox, QTableWidgetItem,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QImage, QPixmap
-import cv2
+from PySide6.QtCore import Qt
 
-from desktop.views.dialogs.postulante_dialog import (
-    DialogEditarPostulante,
-    DialogNuevoPostulanteGestion,
-)
 from desktop.views.dialogs.gestion_dialog import DialogGestion
-from desktop.views.dialogs.carrera_dialog import DialogCarrera
-from desktop.views.dialogs.examen_dialog import DialogExamen
-from desktop.views.dialogs.captura_rostro_dialog import DialogCapturaRostro
-from desktop.views.admin.examen_workspace_view import ExamenWorkspaceView
+
+ESTILO_PRINCIPAL = (
+    "background-color: #2563EB; color: white; padding: 4px 8px; "
+    "border-radius: 4px; border: none; font-size: 11px;"
+)
+ESTILO_PRINCIPAL_VERDE = (
+    "background-color: #059669; color: white; padding: 4px 8px; "
+    "border-radius: 4px; border: none; font-size: 11px;"
+)
+ESTILO_EDITAR = (
+    "background-color: #E0E7FF; color: #3730A3; padding: 4px 8px; "
+    "border-radius: 4px; border: 1px solid #A5B4FC; font-size: 11px;"
+)
+ESTILO_ELIMINAR = (
+    "background-color: #FEE2E2; color: #B91C1C; padding: 4px 8px; "
+    "border-radius: 4px; border: 1px solid #FCA5A5; font-size: 11px;"
+)
+
+
+def _boton(texto, estilo, ancho_min, parent):
+    boton = QPushButton(texto, parent)  # siempre con parent: nunca es ventana suelta
+    boton.setMinimumSize(ancho_min, 32)
+    boton.setMaximumHeight(36)
+    boton.setCursor(Qt.PointingHandCursor)
+    boton.setStyleSheet(estilo)
+    return boton
+
+
+def crear_fila_acciones(
+    tabla, texto_principal, al_principal, al_editar, al_eliminar,
+    puede_eliminar, estilo_principal=ESTILO_PRINCIPAL,
+):
+    """Celda de acciones. El botón Eliminar solo existe para SUPER_ADMIN."""
+    acciones = QWidget(tabla)
+    layout = QHBoxLayout(acciones)
+    layout.setContentsMargins(2, 2, 2, 2)
+    layout.setSpacing(4)
+
+    principal = _boton(texto_principal, estilo_principal, 70, acciones)
+    principal.clicked.connect(lambda _=False: al_principal())
+    layout.addWidget(principal)
+
+    editar = _boton("Editar", ESTILO_EDITAR, 60, acciones)
+    editar.clicked.connect(lambda _=False: al_editar())
+    layout.addWidget(editar)
+
+    if puede_eliminar:
+        eliminar = _boton("Eliminar", ESTILO_ELIMINAR, 70, acciones)
+        eliminar.clicked.connect(lambda _=False: al_eliminar())
+        layout.addWidget(eliminar)
+    return acciones
 
 
 class GestionesMixin:
     def cargar_gestiones_nav(self):
         self.gestiones_nav = self._obtener_lista("/admin/gestiones")
-        self.gestiones_nav_table.setRowCount(len(self.gestiones_nav))
+        tabla = self.gestiones_nav_table
+        tabla.setRowCount(len(self.gestiones_nav))
         for fila, gestion in enumerate(self.gestiones_nav):
             valores = (gestion.get("nombre"), gestion.get("anio"), gestion.get("estado"))
             for columna, valor in enumerate(valores):
-                self.gestiones_nav_table.setItem(fila, columna, QTableWidgetItem(str(valor or "")))
-            acciones = QWidget()
-            acciones_layout = QHBoxLayout(acciones)
-            acciones_layout.setContentsMargins(2, 2, 2, 2)
-            acciones_layout.setSpacing(4)
-            boton = QPushButton("Abrir")
-            boton.setMinimumSize(70, 32)
-            boton.setMaximumHeight(36)
-            boton.setCursor(Qt.PointingHandCursor)
-            boton.setStyleSheet("background-color: #2563EB; color: white; padding: 4px 8px; border-radius: 4px; border: none; font-size: 11px;")
-            boton.clicked.connect(lambda _, item=gestion: self.abrir_gestion_nav(item))
-            btn_editar = QPushButton("Editar")
-            btn_editar.setMinimumSize(60, 32)
-            btn_editar.setMaximumHeight(36)
-            btn_editar.setCursor(Qt.PointingHandCursor)
-            btn_editar.setStyleSheet("background-color: #E0E7FF; color: #3730A3; padding: 4px 8px; border-radius: 4px; border: 1px solid #A5B4FC; font-size: 11px;")
-            btn_editar.clicked.connect(lambda _, item=gestion: self.editar_gestion_nav(item))
-            btn_eliminar = QPushButton("Eliminar")
-            btn_eliminar.setMinimumSize(70, 32)
-            btn_eliminar.setMaximumHeight(36)
-            btn_eliminar.setCursor(Qt.PointingHandCursor)
-            btn_eliminar.setStyleSheet("background-color: #FEE2E2; color: #B91C1C; padding: 4px 8px; border-radius: 4px; border: 1px solid #FCA5A5; font-size: 11px;")
-            btn_eliminar.clicked.connect(lambda _, item=gestion: self.eliminar_gestion_nav(item))
-            acciones_layout.addWidget(boton)
-            acciones_layout.addWidget(btn_editar)
-            acciones_layout.addWidget(btn_eliminar)
-            self.gestiones_nav_table.setCellWidget(fila, 3, acciones)
-            self.gestiones_nav_table.setRowHeight(fila, 50)
+                tabla.setItem(fila, columna, QTableWidgetItem(str(valor or "")))
+            tabla.setCellWidget(fila, 3, crear_fila_acciones(
+                tabla,
+                "Abrir",
+                lambda item=gestion: self.abrir_gestion_nav(item),
+                lambda item=gestion: self.editar_gestion_nav(item),
+                lambda item=gestion: self.eliminar_gestion_nav(item),
+                self.rol == "SUPER_ADMIN",
+            ))
+            tabla.setRowHeight(fila, 50)
 
     def abrir_gestion_nav(self, gestion):
         self.gestion_nav_id = gestion.get("id_gestion")
@@ -61,37 +84,20 @@ class GestionesMixin:
             carrera for carrera in self._obtener_lista("/admin/carreras")
             if carrera.get("activa", True)
         ]
-        self.carreras_nav_table.setRowCount(len(self.carreras_nav))
+        tabla = self.carreras_nav_table
+        tabla.setRowCount(len(self.carreras_nav))
         for fila, carrera in enumerate(self.carreras_nav):
-            self.carreras_nav_table.setItem(fila, 0, QTableWidgetItem(str(carrera.get("nombre", ""))))
-            self.carreras_nav_table.setItem(fila, 1, QTableWidgetItem(str(carrera.get("codigo", ""))))
-            acciones = QWidget()
-            acciones_layout = QHBoxLayout(acciones)
-            acciones_layout.setContentsMargins(2, 2, 2, 2)
-            acciones_layout.setSpacing(4)
-            boton = QPushButton("Examenes")
-            boton.setMinimumSize(70, 32)
-            boton.setMaximumHeight(36)
-            boton.setCursor(Qt.PointingHandCursor)
-            boton.setStyleSheet("background-color: #2563EB; color: white; padding: 4px 8px; border-radius: 4px; border: none; font-size: 11px;")
-            boton.clicked.connect(lambda _, item=carrera: self.abrir_carrera_nav(item))
-            btn_editar = QPushButton("Editar")
-            btn_editar.setMinimumSize(60, 32)
-            btn_editar.setMaximumHeight(36)
-            btn_editar.setCursor(Qt.PointingHandCursor)
-            btn_editar.setStyleSheet("background-color: #E0E7FF; color: #3730A3; padding: 4px 8px; border-radius: 4px; border: 1px solid #A5B4FC; font-size: 11px;")
-            btn_editar.clicked.connect(lambda _, item=carrera: self.editar_carrera_nav(item))
-            btn_eliminar = QPushButton("Eliminar")
-            btn_eliminar.setMinimumSize(70, 32)
-            btn_eliminar.setMaximumHeight(36)
-            btn_eliminar.setCursor(Qt.PointingHandCursor)
-            btn_eliminar.setStyleSheet("background-color: #FEE2E2; color: #B91C1C; padding: 4px 8px; border-radius: 4px; border: 1px solid #FCA5A5; font-size: 11px;")
-            btn_eliminar.clicked.connect(lambda _, item=carrera: self.eliminar_carrera_nav(item))
-            acciones_layout.addWidget(boton)
-            acciones_layout.addWidget(btn_editar)
-            acciones_layout.addWidget(btn_eliminar)
-            self.carreras_nav_table.setCellWidget(fila, 2, acciones)
-            self.carreras_nav_table.setRowHeight(fila, 50)
+            tabla.setItem(fila, 0, QTableWidgetItem(str(carrera.get("nombre", ""))))
+            tabla.setItem(fila, 1, QTableWidgetItem(str(carrera.get("codigo", ""))))
+            tabla.setCellWidget(fila, 2, crear_fila_acciones(
+                tabla,
+                "Examenes",
+                lambda item=carrera: self.abrir_carrera_nav(item),
+                lambda item=carrera: self.editar_carrera_nav(item),
+                lambda item=carrera: self.eliminar_carrera_nav(item),
+                self.rol == "SUPER_ADMIN",
+            ))
+            tabla.setRowHeight(fila, 50)
         self.academico_stack.setCurrentIndex(1)
 
     def crear_gestion_nav(self):

@@ -33,27 +33,71 @@ instaladas, no es necesario repetir este paso.
 
 ## Configurar la URL del backend
 
-En la raíz del frontend crea o edita `.env`:
+Copia el archivo de ejemplo usando el comando de tu terminal.
+
+**PowerShell**
+
+```powershell
+Copy-Item .env.example .env
+```
+
+**Git Bash**
+
+```bash
+cp .env.example .env
+```
+
+Edita `.env` y ajusta la URL:
 
 ```dotenv
 API_BASE_URL=http://127.0.0.1:8000/api/v1
 ```
 
-Si el backend utiliza otro equipo de la red:
+Si el backend está en otro equipo de la red:
 
 ```dotenv
 API_BASE_URL=http://IP_DEL_SERVIDOR:8000/api/v1
 ```
 
-Si el backend utiliza otro puerto, reemplaza `8000`.
+Si el backend usa otro puerto, reemplaza `8000`.
+
+También puedes definirla solo para la sesión actual, sin editar `.env`:
+
+**PowerShell**
+
+```powershell
+$env:API_BASE_URL="http://127.0.0.1:8000/api/v1"
+py -3.13 main.py
+```
+
+**Git Bash**
+
+```bash
+export API_BASE_URL="http://127.0.0.1:8000/api/v1"
+py -3.13 main.py
+```
 
 ## Configurar la clave de aplicación
+
+Copia el archivo de ejemplo usando el comando de tu terminal.
+
+**PowerShell**
+
+```powershell
+Copy-Item config/app_config.example.json config/app_config.json
+```
+
+**Git Bash**
+
+```bash
+cp config/app_config.example.json config/app_config.json
+```
 
 Edita `config/app_config.json`:
 
 ```json
 {
-  "app_client_key": "LA_MISMA_APP_CLIENT_KEY_DEL_BACKEND"
+  "app_client_key": "CAMBIA_ESTO_POR_LA_MISMA_APP_CLIENT_KEY_DEL_BACKEND"
 }
 ```
 
@@ -121,6 +165,20 @@ Si el lector aparece detectado pero no captura, comprueba que:
 7. Registra y habilita rostro o huellas.
 8. Programa el examen y asigna aulas/asientos si corresponde.
 9. Abre el registro biométrico durante la ventana del examen.
+
+## Roles administrativos
+
+El sistema tiene dos paneles con la misma plantilla visual:
+
+- `SUPER_ADMIN`: acceso completo, incluida la administración de usuarios,
+  auditoría y eliminación de registros.
+- `ADMIN`: abre el panel auxiliar ubicado en `views/admin/auxiliar`. Puede
+  gestionar postulantes, gestiones, carreras, exámenes y las operaciones
+  permitidas para su rol, pero no puede administrar usuarios, consultar la
+  auditoría ni eliminar datos.
+
+Las restricciones se aplican tanto en la interfaz como en el backend. Ocultar
+un botón no sustituye la autorización del servidor.
 
 ## Solución de problemas
 

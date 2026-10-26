@@ -681,6 +681,7 @@ class PostulantesMixin:
         carnet.btn_eliminar.clicked.connect(
             lambda _, p=postulante: self.eliminar_postulante_gestion(p)
         )
+        carnet.btn_eliminar.setVisible(self.rol == "SUPER_ADMIN")
         carnet.seleccionado.connect(self._seleccionar_carnet)
         carnet.editar_solicitado.connect(self.editar_postulante_en_fila)
         return carnet
@@ -801,14 +802,48 @@ class PostulantesMixin:
             QMessageBox.warning(self, "Postulantes", "Como máximo 2 carreras por gestión.")
             return
         try:
-            respuesta = requests.post(
-                f"{self.api_base_url}/postulantes/", json=datos,
-                headers=self._auth_headers(), timeout=6
+            respuesta_busqueda = requests.get(
+                f"{self.api_base_url}/postulantes/buscar",
+                params={"ci": datos["ci"]},
+                headers=self._auth_headers(), timeout=6,
             )
-            if respuesta.status_code not in (200, 201):
-                QMessageBox.warning(self, "Postulantes", str(respuesta.json().get("detail", "No se pudo crear el postulante.")))
+            if respuesta_busqueda.status_code == 200:
+                existente = respuesta_busqueda.json()
+                nombre = (
+                    f"{existente.get('nombres', '')} "
+                    f"{existente.get('apellidos', '')}"
+                ).strip()
+                confirmacion = QMessageBox.question(
+                    self,
+                    "Postulante existente",
+                    (
+                        f"El C.I. {datos['ci']} ya pertenece a «{nombre}».\n\n"
+                        "¿Desea inscribir este mismo postulante en la gestión actual?"
+                    ),
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if confirmacion != QMessageBox.Yes:
+                    return
+                id_postulante = existente["id_postulante"]
+            elif respuesta_busqueda.status_code == 404:
+                respuesta = requests.post(
+                    f"{self.api_base_url}/postulantes/", json=datos,
+                    headers=self._auth_headers(), timeout=6
+                )
+                if respuesta.status_code not in (200, 201):
+                    QMessageBox.warning(
+                        self, "Postulantes",
+                        str(respuesta.json().get("detail", "No se pudo crear el postulante."))
+                    )
+                    return
+                id_postulante = respuesta.json()["id_postulante"]
+            else:
+                QMessageBox.warning(
+                    self, "Postulantes",
+                    str(respuesta_busqueda.json().get("detail", "No se pudo consultar el C.I."))
+                )
                 return
-            id_postulante = respuesta.json()["id_postulante"]
 
             inscritas = 0
             errores = []

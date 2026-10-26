@@ -120,6 +120,9 @@ class DialogAsientosAula(QDialog):
                 "background-color: #FEE2E2; color: #991B1B; padding: 4px 8px; "
                 "border-radius: 4px; border: 1px solid #FCA5A5; font-size: 11px;"
             )
+            btn_eliminar.setVisible(
+                not self.parent() or getattr(self.parent(), "rol", "") == "SUPER_ADMIN"
+            )
             btn_eliminar.clicked.connect(lambda _, a=asiento: self.eliminar_asiento(a))
             h.addWidget(btn_toggle)
             h.addWidget(btn_eliminar)

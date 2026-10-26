@@ -1014,6 +1014,7 @@ class ExamenWorkspaceView(QWidget):
         self.btn_sorteo.clicked.connect(self.ejecutar_sorteo)
         self.btn_limpiar = self._boton("Limpiar asignaciones", "peligro", alto=44)
         self.btn_limpiar.clicked.connect(self.limpiar_asignaciones)
+        self.btn_limpiar.setVisible(self.token_data.get("rol") == "SUPER_ADMIN")
         acciones.addWidget(self.btn_sorteo, stretch=2)
         acciones.addWidget(self.btn_limpiar, stretch=1)
         disp_layout.addLayout(acciones)
