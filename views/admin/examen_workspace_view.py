@@ -883,12 +883,14 @@ class ExamenWorkspaceView(QWidget):
                     item.setForeground(verde if postulante.get("rostro_habilitado") else gris)
                 self.tabla_postulantes.setItem(fila, columna, item)
 
-            # Botón con el mismo estilo exacto de "Generar reporte" (btnPrimario)
-            celda = QWidget()
+            # Botón con el mismo estilo exacto de "Generar reporte" (btnPrimario).
+            # La celda y el botón llevan parent para no existir nunca como ventanas sueltas.
+            celda = QWidget(self.tabla_postulantes)
             lay_celda = QHBoxLayout(celda)
             lay_celda.setContentsMargins(8, 7, 8, 7)
 
             boton = self._boton("Editar asiento", "primario", "editar", alto=36)
+            boton.setParent(celda)
             boton.setMinimumWidth(150)
             boton.clicked.connect(
                 lambda _checked=False, p=postulante: self.editar_asignacion_postulante(p)
@@ -1012,11 +1014,16 @@ class ExamenWorkspaceView(QWidget):
         acciones.setSpacing(10)
         self.btn_sorteo = self._boton("Ejecutar sorteo de asientos", "primario", "dado", alto=44)
         self.btn_sorteo.clicked.connect(self.ejecutar_sorteo)
-        self.btn_limpiar = self._boton("Limpiar asignaciones", "peligro", alto=44)
-        self.btn_limpiar.clicked.connect(self.limpiar_asignaciones)
-        self.btn_limpiar.setVisible(self.token_data.get("rol") == "SUPER_ADMIN")
         acciones.addWidget(self.btn_sorteo, stretch=2)
-        acciones.addWidget(self.btn_limpiar, stretch=1)
+
+        # El botón solo se crea para SUPER_ADMIN. Antes se creaba siempre y se
+        # llamaba a setVisible(True) antes de entrar en el layout, lo que lo
+        # mostraba un instante como ventana suelta.
+        self.btn_limpiar = None
+        if self.token_data.get("rol") == "SUPER_ADMIN":
+            self.btn_limpiar = self._boton("Limpiar asignaciones", "peligro", alto=44)
+            self.btn_limpiar.clicked.connect(self.limpiar_asignaciones)
+            acciones.addWidget(self.btn_limpiar, stretch=1)
         disp_layout.addLayout(acciones)
         derecha.addWidget(self.card_disp)
 
