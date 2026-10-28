@@ -34,7 +34,9 @@ from desktop.biometria import (
     detectar_lectores, libfprint_disponible, sdk_zk_disponible,
 )
 
+
 log = logging.getLogger(__name__)
+
 
 # Cuánto tiempo permanece la tarjeta de resultado en pantalla antes de
 # volver al panel de espera. Antes era 3,5 s, demasiado corto para leer
@@ -42,11 +44,16 @@ log = logging.getLogger(__name__)
 TIEMPO_MOSTRAR_RESULTADO_MS = 30000
 TIEMPO_REINICIO_LECTOR_MS = 900
 
+# Diámetro de la foto del postulante en la tarjeta de resultado.
+TAMANO_FOTO_RESULTADO = 220
+
+
 # ── Ajustes de rendimiento ──
-ANIMAR_ESPERA = True             # False = huella estática (menos CPU en equipos lentos)
+ANIMAR_ESPERA = True          # False = huella estática (menos CPU en equipos lentos)
 EDAD_MAX_ESTADO_LECTOR_S = 20    # cada cuánto se vuelve a escanear el bus USB
 UMBRAL_OPERACION_LENTA_S = 0.15  # avisa en consola si algo tarda más que esto
 UMBRAL_BLOQUEO_UI_MS = 400       # avisa si la ventana se congela más que esto
+
 
 # Colores suaves para el avatar (fondo, texto)
 _COLORES_AVATAR = (
@@ -58,6 +65,7 @@ _COLORES_AVATAR = (
     ("#E0F2FE", "#075985"),
 )
 _COLOR_TONO = {"exito": "#16A34A", "error": "#DC2626", "aviso": "#D97706"}
+
 
 
 # ======================================================================
@@ -138,6 +146,28 @@ def _pixmap_resultado(tono, lado=64):
         p.drawEllipse(QPointF(s * 0.5, s * 0.71), s * 0.055, s * 0.055)
     p.end()
     return pm
+
+
+def _pixmap_circular(imagen, lado):
+    """Recorta la foto al centro y la deja circular, del tamaño del avatar."""
+    escalada = QPixmap.fromImage(imagen).scaled(
+        lado, lado, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+    )
+    x = max(0, (escalada.width() - lado) // 2)
+    y = max(0, (escalada.height() - lado) // 2)
+    recorte = escalada.copy(x, y, lado, lado)
+
+    circular = QPixmap(lado, lado)
+    circular.fill(Qt.transparent)
+    pintor = QPainter(circular)
+    pintor.setRenderHint(QPainter.Antialiasing)
+    ruta = QPainterPath()
+    ruta.addEllipse(QRectF(0, 0, lado, lado))
+    pintor.setClipPath(ruta)
+    pintor.drawPixmap(0, 0, recorte)
+    pintor.end()
+    return circular
+
 
 
 # ======================================================================
@@ -284,6 +314,7 @@ class EstadoLector(QLabel):
         p.setBrush(QColor(self.COLORES.get(self._tono, self.COLORES["neutro"])))
         p.drawEllipse(QPointF(7, self.height() / 2), 4.5, 4.5)
         p.end()
+
 
 
 # ======================================================================
@@ -562,14 +593,13 @@ class MarcacionMixin:
         # Identidad
         indice = sum(ord(c) for c in str(ci or nombre)) % len(_COLORES_AVATAR)
         fondo, texto = _COLORES_AVATAR[indice]
-        self.lbl_res_avatar.setText(_iniciales(nombre))
-        self.lbl_res_avatar.setStyleSheet(
-            f"background: {fondo}; color: {texto}; border-radius: 48px;"
-            "font-size: 34px; font-weight: 800;"
-        )
+        radio = TAMANO_FOTO_RESULTADO // 2
         self.lbl_res_avatar.setPixmap(QPixmap())
         self.lbl_res_avatar.setText(_iniciales(nombre))
-        self.lbl_res_nombre.setText(nombre)
+        self.lbl_res_avatar.setStyleSheet(
+            f"background: {fondo}; color: {texto}; border-radius: {radio}px;"
+            f"font-size: {int(TAMANO_FOTO_RESULTADO * 0.34)}px; font-weight: 800;"
+        )
         self._cargar_foto_postulante(data.get("id_postulante") or candidato.get("id_postulante"))
 
         self.lbl_res_ci.setVisible(bool(ci))
@@ -638,16 +668,10 @@ class MarcacionMixin:
             log.warning("La foto del postulante %s no es una imagen válida", id_postulante)
             return
 
-        lado = min(self.lbl_res_avatar.width(), self.lbl_res_avatar.height())
-        pixmap = QPixmap.fromImage(imagen).scaled(
-            lado, lado, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
-        )
-        self.lbl_res_avatar.setStyleSheet(
-            "background: #E2E8F0; border-radius: 48px;"
-        )
+        self.lbl_res_avatar.setStyleSheet("background: transparent; border: none;")
         self.lbl_res_avatar.setText("")
         self.lbl_res_avatar.setAlignment(Qt.AlignCenter)
-        self.lbl_res_avatar.setPixmap(pixmap)
+        self.lbl_res_avatar.setPixmap(_pixmap_circular(imagen, TAMANO_FOTO_RESULTADO))
 
     def mostrar_resultado(self, exito: bool, titulo: str, detalle: str, asiento: str,
                           tono: str = None):
@@ -800,8 +824,8 @@ class MarcacionMixin:
     def _crear_tarjeta_resultado(self):
         tarjeta = QFrame()
         tarjeta.setObjectName("resultCard")
-        tarjeta.setMinimumSize(720, 400)
-        tarjeta.setMaximumSize(920, 520)
+        tarjeta.setMinimumSize(760, 520)
+        tarjeta.setMaximumSize(980, 720)
         raiz = QVBoxLayout(tarjeta)
         raiz.setContentsMargins(0, 0, 0, 0)
         raiz.setSpacing(0)
@@ -866,7 +890,7 @@ class MarcacionMixin:
         identidad = QHBoxLayout()
         identidad.setSpacing(24)
         self.lbl_res_avatar = QLabel("?")
-        self.lbl_res_avatar.setFixedSize(96, 96)
+        self.lbl_res_avatar.setFixedSize(TAMANO_FOTO_RESULTADO, TAMANO_FOTO_RESULTADO)
         self.lbl_res_avatar.setAlignment(Qt.AlignCenter)
         identidad.addWidget(self.lbl_res_avatar, 0, Qt.AlignTop)
 
@@ -969,8 +993,8 @@ class MarcacionMixin:
         centro = QHBoxLayout()
         centro.setSpacing(0)
         self.panel_espera = PanelEspera()
-        self.panel_espera.setMinimumSize(720, 400)
-        self.panel_espera.setMaximumSize(920, 520)
+        self.panel_espera.setMinimumSize(760, 520)
+        self.panel_espera.setMaximumSize(980, 720)
         self.tarjeta_resultado = self._crear_tarjeta_resultado()
         self.tarjeta_resultado.setVisible(False)
         centro.addStretch(1)
