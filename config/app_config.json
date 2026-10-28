@@ -1,3 +1,5 @@
 {
-  "app_client_key": "6722201afb614ed366611fb5f2cce0f6fa659b69fd38c4460af3a2c9692c08bb"
+  "api_base_url": "http://127.0.0.1:8000/api/v1",
+  "app_client_key": "6722201afb614ed366611fb5f2cce0f6fa659b69fd38c4460af3a2c9692c08bb",
+  "timeout_segundos": 10
 }

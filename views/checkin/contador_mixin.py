@@ -1,16 +1,14 @@
+import math
+
 import requests
 from PySide6.QtWidgets import (
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
-    QScrollArea,
-    QTableWidget,
-    QTableWidgetItem,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
-    QHeaderView,
 )
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
 from desktop.config.app_config import AppConfig
@@ -38,6 +36,144 @@ class _TareaContador(QRunnable):
         except (requests.RequestException, ValueError):
             datos = None
         self._emisor.listo.emit(datos)
+
+
+def _repintar(widget):
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+    for hijo in widget.findChildren(QWidget):
+        hijo.style().unpolish(hijo)
+        hijo.style().polish(hijo)
+    widget.update()
+
+
+def _entero(valor, defecto=0):
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return defecto
+
+
+def _acotar(valor, total):
+    """El numerador nunca pasa el total. Así no aparece 4 de 3 ni más de 100%."""
+    valor = max(0, _entero(valor))
+    total = max(0, _entero(total))
+    if total > 0:
+        valor = min(valor, total)
+    return valor, total
+
+
+def _porcentaje(valor, total):
+    valor, total = _acotar(valor, total)
+    if total <= 0:
+        return 0
+    return max(0, min(100, int(round(valor * 100 / total))))
+
+
+def _estado_capacidad(contador):
+    """Rojo si la sala está llena. Amarillo si solo cerró la asignación. Si no, verde.
+
+    Si las dos cosas pasan a la vez, gana el rojo: ya no caben más personas.
+    """
+    ocupados = _entero(contador.get("asientos_ocupados"))
+    total_asientos = _entero(contador.get("total_asientos"))
+    libres = contador.get("asientos_libres")
+    libres = max(0, total_asientos - ocupados) if libres is None else max(0, _entero(libres))
+
+    asignados = _entero(contador.get("total_asignados"))
+    ingresados = _entero(contador.get("total_ingresados"))
+    pendientes = contador.get("total_pendientes")
+    pendientes = max(0, asignados - ingresados) if pendientes is None else max(0, _entero(pendientes))
+
+    capacidad_llena = total_asientos > 0 and (ocupados >= total_asientos or libres <= 0)
+    asignacion_completa = asignados > 0 and (pendientes <= 0 or ingresados >= asignados)
+
+    if capacidad_llena:
+        return "lleno", "Capacidad al máximo"
+    if asignacion_completa:
+        return "asignado", "Asignación completa"
+    if total_asientos <= 0 and asignados <= 0:
+        return "disponible", "Sin datos de cupo"
+    return "disponible", "Con cupo"
+
+
+class _AnilloCursos(QWidget):
+    """Contador grande al centro y una tarjeta por aula en el borde."""
+
+    def __init__(self, centro, parent=None):
+        super().__init__(parent)
+        self._centro = centro
+        self._tarjetas = []
+        self._vacio = QLabel("No hay cursos activos en este momento")
+        self._vacio.setObjectName("emptyCourses")
+        self._vacio.setAlignment(Qt.AlignCenter)
+        centro.setParent(self)
+        self._vacio.setParent(self)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(720, 520)
+
+    def set_tarjetas(self, tarjetas):
+        for vieja in self._tarjetas:
+            vieja.hide()
+            vieja.setParent(None)
+            vieja.deleteLater()
+        self._tarjetas = list(tarjetas)
+        for tarjeta in self._tarjetas:
+            tarjeta.setParent(self)
+            tarjeta.show()
+            _repintar(tarjeta)
+        self._vacio.setVisible(not self._tarjetas)
+        self._reubicar()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reubicar()
+
+    def _reubicar(self):
+        ancho = max(self.width(), 1)
+        alto = max(self.height(), 1)
+        n = len(self._tarjetas)
+
+        if n > 10:
+            lado = min(int(ancho * 0.26), int(alto * 0.32), 300)
+            tw, th = 156, 86
+        elif n > 6:
+            lado = min(int(ancho * 0.30), int(alto * 0.36), 340)
+            tw, th = 188, 96
+        else:
+            lado = min(int(ancho * 0.34), int(alto * 0.42), 400)
+            tw, th = 220, 108
+
+        lado = max(lado, 220)
+        alto_centro = int(lado * 0.92)
+        self._centro.setGeometry(
+            (ancho - lado) // 2,
+            (alto - alto_centro) // 2,
+            lado,
+            alto_centro,
+        )
+        self._vacio.setGeometry(0, alto - 36, ancho, 28)
+
+        if n == 0:
+            self._centro.raise_()
+            return
+
+        margen = 10
+        rx = max(70, (ancho - tw) / 2 - margen)
+        ry = max(50, (alto - th) / 2 - margen)
+        hueco = (2 * math.pi * ((rx + ry) / 2)) / n
+        if hueco < tw + 14:
+            tw = max(148, int(hueco - 14))
+
+        cx = ancho / 2
+        cy = alto / 2
+        for i, tarjeta in enumerate(self._tarjetas):
+            angulo = (-math.pi / 2) + (2 * math.pi * i / n)
+            x = cx + math.cos(angulo) * rx - tw / 2
+            y = cy + math.sin(angulo) * ry - th / 2
+            tarjeta.setGeometry(int(round(x)), int(round(y)), tw, th)
+
+        self._centro.raise_()
 
 
 class ContadorMixin:
@@ -78,105 +214,133 @@ class ContadorMixin:
 
         self._actualizar_resumen(contadores, id_examen)
         self._actualizar_tarjetas_cursos(contadores)
-        data = next(
-            (item for item in contadores if item.get("id_examen") == id_examen),
-            {},
-        )
-        self._actualizar_ultimos(data.get("ultimos_ingresos", []))
 
     def _actualizar_resumen(self, contadores, id_examen):
         data = next(
             (item for item in contadores if item.get("id_examen") == id_examen),
             {},
         )
-        total = data.get("total_asignados", 0)
-        ingresados = data.get("total_ingresados", 0)
-        pendientes = data.get("total_pendientes", max(0, total - ingresados))
-        porcentaje = data.get("porcentaje_asistencia", 0.0)
+        total = _entero(data.get("total_asignados"))
+        ingresados, total = _acotar(data.get("total_ingresados"), total)
+        pendientes = max(0, total - ingresados)
+        porcentaje = _porcentaje(ingresados, total)
 
         self.lbl_contador_numero.setText(str(ingresados))
         self.lbl_contador_total.setText(f"de {total} postulantes")
         self.lbl_contador_pendientes.setText(f"{pendientes} pendientes")
-        self.lbl_contador_porcentaje.setText(f"{porcentaje:.1f}% de asistencia")
-        self.progress_asistencia.setValue(int(porcentaje))
+        self.lbl_contador_porcentaje.setText(f"{porcentaje}% de asistencia")
+        self.progress_asistencia.setRange(0, 100)
+        self.progress_asistencia.setValue(porcentaje)
+
+        estado, texto = _estado_capacidad(data)
+        self.lbl_contador_estado.setText(texto)
+        self._pintar_estado(self.lbl_contador_estado, estado)
 
     def _actualizar_tarjetas_cursos(self, contadores):
-        while self.cursos_layout.count():
-            item = self.cursos_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        tarjetas = []
+        id_actual = self.info_examen.get("id_examen")
+        for examen in list(contadores or []):
+            if examen.get("id_examen") != id_actual:
+                continue
+            for aula in examen.get("aulas") or []:
+                tarjetas.append(self._crear_tarjeta_aula(aula, examen))
+        if not tarjetas:
+            for examen in list(contadores or []):
+                for aula in examen.get("aulas") or []:
+                    tarjetas.append(self._crear_tarjeta_aula(aula, examen))
+        self._anillo.set_tarjetas(tarjetas)
 
-        if not contadores:
-            empty = QLabel("No hay cursos activos en este momento")
-            empty.setObjectName("emptyCourses")
-            self.cursos_layout.addWidget(empty, 0, 0)
-            return
+    def _pintar_estado(self, widget, estado):
+        widget.setProperty("estado", estado)
+        if widget.parent() is not None:
+            _repintar(widget)
 
-        for index, contador in enumerate(contadores):
-            card = self._crear_tarjeta_curso(contador)
-            self.cursos_layout.addWidget(card, index // 3, index % 3)
+    def _crear_tarjeta_aula(self, aula, examen=None):
+        examen = examen or {}
+        es_actual = examen.get("id_examen") == self.info_examen.get("id_examen")
 
-    def _crear_tarjeta_curso(self, contador):
+        ocupados = _entero(aula.get("asientos_ocupados"))
+        total_asientos = _entero(aula.get("total_asientos"))
+        libres = aula.get("asientos_libres")
+        libres = max(0, total_asientos - ocupados) if libres is None else max(0, _entero(libres))
+
+        ingresados = _entero(aula.get("postulantes_ingresados"))
+        if aula.get("faltan_ingresar") is None:
+            pendientes = max(0, _entero(aula.get("asientos_ocupados")) - ingresados)
+        else:
+            pendientes = max(0, _entero(aula.get("faltan_ingresar")))
+        # Los asignados son los que entraron más los que faltan, no los asientos ocupados.
+        asignados = ingresados + pendientes
+
+        contador_fake = {
+            "asientos_ocupados": ocupados,
+            "total_asientos": total_asientos,
+            "asientos_libres": libres,
+            "total_asignados": asignados,
+            "total_ingresados": ingresados,
+            "total_pendientes": pendientes,
+        }
+        estado, texto_estado = _estado_capacidad(contador_fake)
+
+        ocupados_vista, total_vista = _acotar(ocupados, total_asientos)
+        libres_vista = min(libres, max(0, total_vista - ocupados_vista))
+        ingresados_vista, asignados_vista = _acotar(ingresados, asignados)
+        pendientes_vista = max(0, asignados_vista - ingresados_vista)
+
         card = QFrame()
         card.setObjectName("courseCard")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(8)
+        card.setAttribute(Qt.WA_StyledBackground, True)
+        card.setProperty("activo", es_actual)
 
-        title_row = QHBoxLayout()
-        title = QLabel(contador.get("curso", "Curso"))
-        title.setObjectName("courseTitle")
-        subject = QLabel(contador.get("materia", "Examen"))
-        subject.setObjectName("courseSubject")
-        title_row.addWidget(title)
-        title_row.addStretch()
-        title_row.addWidget(subject)
-        layout.addLayout(title_row)
+        fila = QHBoxLayout(card)
+        fila.setContentsMargins(0, 0, 0, 0)
+        fila.setSpacing(0)
 
-        entered = contador.get("total_ingresados", 0)
-        pending = contador.get("total_pendientes", 0)
-        attendance = contador.get("porcentaje_asistencia", 0.0)
-        attendance_label = QLabel(f"{entered} ingresaron  ·  {pending} pendientes")
-        attendance_label.setObjectName("courseAttendance")
-        layout.addWidget(attendance_label)
+        franja = QFrame()
+        franja.setObjectName("courseStripe")
+        franja.setFixedWidth(7)
+        fila.addWidget(franja)
 
-        progress = QProgressBar()
-        progress.setRange(0, 100)
-        progress.setValue(int(attendance))
-        progress.setFormat(f"{attendance:.1f}% de asistencia")
-        progress.setAlignment(Qt.AlignCenter)
-        progress.setObjectName("courseProgress")
-        layout.addWidget(progress)
+        cuerpo = QVBoxLayout()
+        cuerpo.setContentsMargins(10, 8, 10, 8)
+        cuerpo.setSpacing(2)
+        fila.addLayout(cuerpo)
 
-        seats_row = QHBoxLayout()
-        occupied = contador.get("asientos_ocupados", 0)
-        free = contador.get("asientos_libres", 0)
-        total_seats = contador.get("total_asientos", 0)
-        occupied_label = QLabel(f"● {occupied} ocupados")
-        occupied_label.setObjectName("occupiedLabel")
-        free_label = QLabel(f"○ {free} libres")
-        free_label.setObjectName("freeLabel")
-        seats_row.addWidget(occupied_label)
-        seats_row.addStretch()
-        seats_row.addWidget(free_label)
-        layout.addLayout(seats_row)
+        titulo_fila = QHBoxLayout()
+        titulo = QLabel(str(aula.get("nombre") or "Aula"))
+        titulo.setObjectName("courseTitle")
+        materia = QLabel(str(examen.get("materia") or examen.get("curso") or ""))
+        materia.setObjectName("courseSubject")
+        materia.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        titulo_fila.addWidget(titulo, stretch=1)
+        if materia.text():
+            titulo_fila.addWidget(materia)
+        cuerpo.addLayout(titulo_fila)
 
-        capacity = QLabel(f"Capacidad asignada: {total_seats} asientos")
-        capacity.setObjectName("courseCapacity")
-        layout.addWidget(capacity)
+        estado_lbl = QLabel(texto_estado + ("  ·  este examen" if es_actual else ""))
+        estado_lbl.setObjectName("courseState")
+        cuerpo.addWidget(estado_lbl)
+
+        asientos = QLabel(f"Asientos  {ocupados_vista}/{total_vista}   ·   {libres_vista} libres")
+        asientos.setObjectName("courseMeta")
+        asignacion = QLabel(
+            f"Asignación  {ingresados_vista}/{asignados_vista}   ·   {pendientes_vista} pend."
+        )
+        asignacion.setObjectName("courseMeta")
+        cuerpo.addWidget(asientos)
+        cuerpo.addWidget(asignacion)
+
+        progreso = QProgressBar()
+        progreso.setObjectName("courseProgress")
+        progreso.setRange(0, 100)
+        progreso.setValue(_porcentaje(ocupados, total_asientos) if total_asientos else _porcentaje(ingresados, asignados))
+        progreso.setTextVisible(False)
+        progreso.setFixedHeight(7)
+        self._pintar_estado(progreso, estado)
+        cuerpo.addWidget(progreso)
+
+        self._pintar_estado(card, estado)
         return card
-
-    def _actualizar_ultimos(self, ultimos):
-        self.tabla_ultimos.setRowCount(len(ultimos))
-        for row, item in enumerate(ultimos):
-            values = (
-                item.get("hora", ""),
-                item.get("metodo", ""),
-                item.get("resultado", ""),
-                item.get("estacion", ""),
-            )
-            for column, value in enumerate(values):
-                self.tabla_ultimos.setItem(row, column, QTableWidgetItem(str(value)))
 
     def _construir_tab_contador(self):
         tab_contador = QWidget()
@@ -185,91 +349,124 @@ class ContadorMixin:
         tab_contador.setStyleSheet("""
             QWidget#counterTab { background: #F1F5F9; }
 
-            /* Evita los bloques blancos */
-            QScrollArea { background: transparent; border: 0; }
-            QScrollArea > QWidget > QWidget { background: transparent; }
-            QWidget#coursesContainer { background: transparent; }
-
-            /* HERO */
             QFrame#counterHero {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #0F2A57, stop:0.6 #17497C, stop:1 #1F7A8C);
-                border-radius: 20px;
+                border-radius: 28px;
             }
             QFrame#counterHero QLabel { background: transparent; }
             QLabel#counterEyebrow { color: #A9D6EE; font-size: 11px; font-weight: 800; }
-            QLabel#counterNumber  { color: #FFFFFF; font-size: 60px; font-weight: 900; }
-            QLabel#counterTotal   { color: #D3ECF7; font-size: 16px; font-weight: 600; }
+            QLabel#counterNumber  { color: #FFFFFF; font-size: 58px; font-weight: 900; }
+            QLabel#counterTotal   { color: #D3ECF7; font-size: 15px; font-weight: 600; }
             QLabel#counterPending, QLabel#counterPercent {
-                color: #E6F4FA; font-size: 13px; font-weight: 700;
+                color: #E6F4FA; font-size: 12px; font-weight: 700;
+            }
+            QLabel#counterState {
+                font-size: 12px; font-weight: 800;
+                padding: 4px 10px; border-radius: 10px;
+            }
+            QLabel#counterState[estado="lleno"] {
+                color: #7A1E1E; background: #F6C9C4;
+            }
+            QLabel#counterState[estado="asignado"] {
+                color: #6B4A00; background: #F8E3A8;
+            }
+            QLabel#counterState[estado="disponible"] {
+                color: #0E5C3A; background: #B7EBD4;
             }
             QProgressBar#mainProgress {
                 min-height: 12px; max-height: 12px;
                 border: 0; border-radius: 6px; background: rgba(255,255,255,0.18);
             }
-            QProgressBar#mainProgress::chunk { border-radius: 6px; background: #7DE2C3; }
+            QProgressBar#mainProgress::chunk {
+                border-radius: 6px; background: #7DE2C3;
+            }
 
-            /* TÍTULOS */
             QLabel#sectionTitle {
                 color: #17365D; font-size: 15px; font-weight: 800; background: transparent;
             }
+            QLabel#legendDot { font-size: 12px; font-weight: 800; background: transparent; }
+            QLabel#legendDot[estado="lleno"] { color: #C8362F; }
+            QLabel#legendDot[estado="asignado"] { color: #C48A00; }
+            QLabel#legendDot[estado="disponible"] { color: #1F8A5B; }
+            QLabel#legendText { color: #4C647C; font-size: 12px; background: transparent; }
 
-            /* TARJETAS */
             QFrame#courseCard {
-                background: #FFFFFF; border: 1px solid #DCE5EF; border-radius: 16px;
-            }
-            QFrame#courseCard:hover { border: 1px solid #4FA9D1; }
-            QFrame#courseCard QLabel { background: transparent; }
-            QLabel#courseTitle      { color: #163A63; font-size: 16px; font-weight: 800; }
-            QLabel#courseSubject    { color: #54718E; font-size: 11px; font-weight: 700; }
-            QLabel#courseAttendance { color: #36536F; font-size: 12px; font-weight: 600; }
-            QLabel#courseCapacity   { color: #7890A7; font-size: 11px; }
-            QLabel#occupiedLabel    { color: #C8503E; font-size: 12px; font-weight: 700; }
-            QLabel#freeLabel        { color: #1F7A64; font-size: 12px; font-weight: 700; }
-            QLabel#emptyCourses     { color: #71869D; font-size: 14px; padding: 24px; }
-
-            /* Texto OSCURO para que se lea sobre pista clara y sobre la barra */
-            QProgressBar#courseProgress {
-                min-height: 18px; max-height: 18px;
-                border: 0; border-radius: 9px;
-                text-align: center; color: #12354F;
-                font-size: 10px; font-weight: 800;
-                background: #E3EAF2;
-            }
-            QProgressBar#courseProgress::chunk { border-radius: 9px; background: #6FD3B8; }
-
-            /* TABLA */
-            QTableWidget#historyTable {
                 background: #FFFFFF;
-                alternate-background-color: #F5F9FD;
-                border: 1px solid #DCE5EF; border-radius: 10px;
-                gridline-color: transparent;
-                color: #294661;
-                selection-background-color: #D9EAF7;
-                selection-color: #12354F;
+                border: 1px solid #D5E0EB;
+                border-radius: 14px;
             }
-            QTableWidget#historyTable::item { padding: 6px; border: 0; }
-            QHeaderView::section {
-                background: #EAF1F7; color: #355572;
-                border: 0; padding: 8px; font-weight: 700;
+            QFrame#courseCard[estado="lleno"] {
+                background: #FFF6F5;
+                border: 2px solid #E07A70;
             }
-            QTableCornerButton::section { background: #EAF1F7; border: 0; }
+            QFrame#courseCard[estado="asignado"] {
+                background: #FFFBF2;
+                border: 2px solid #E3B341;
+            }
+            QFrame#courseCard[estado="disponible"] {
+                background: #F4FBF7;
+                border: 2px solid #7DCCAA;
+            }
+            QFrame#courseCard[activo="true"] { border-width: 3px; }
+            QFrame#courseStripe { border: 0; border-radius: 0; background: #D5E0EB; }
+            QFrame#courseCard[estado="lleno"] QFrame#courseStripe { background: #D64545; }
+            QFrame#courseCard[estado="asignado"] QFrame#courseStripe { background: #E0A100; }
+            QFrame#courseCard[estado="disponible"] QFrame#courseStripe { background: #1F9D62; }
 
-            /* SCROLLBAR */
-            QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
-            QScrollBar::handle:vertical { background: #C3D2E0; border-radius: 4px; min-height: 30px; }
-            QScrollBar::handle:vertical:hover { background: #9FB6CB; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QFrame#courseCard QLabel { background: transparent; }
+            QLabel#courseTitle { color: #163A63; font-size: 13px; font-weight: 800; }
+            QLabel#courseSubject { color: #5C7892; font-size: 10px; font-weight: 700; }
+            QLabel#courseMeta { color: #3E5872; font-size: 11px; font-weight: 600; }
+            QLabel#courseState { font-size: 11px; font-weight: 800; }
+            QFrame#courseCard[estado="lleno"] QLabel#courseState { color: #A32626; }
+            QFrame#courseCard[estado="asignado"] QLabel#courseState { color: #8A5A00; }
+            QFrame#courseCard[estado="disponible"] QLabel#courseState { color: #146C43; }
+            QLabel#emptyCourses { color: #71869D; font-size: 13px; background: transparent; }
+
+            QProgressBar#courseProgress {
+                border: 0; border-radius: 4px; background: #E3EAF2;
+            }
+            QProgressBar#courseProgress[estado="lleno"]::chunk {
+                border-radius: 4px; background: #D64545;
+            }
+            QProgressBar#courseProgress[estado="asignado"]::chunk {
+                border-radius: 4px; background: #E0A100;
+            }
+            QProgressBar#courseProgress[estado="disponible"]::chunk {
+                border-radius: 4px; background: #1F9D62;
+            }
         """)
+
         layout = QVBoxLayout(tab_contador)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(16)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        encabezado = QHBoxLayout()
+        titulo = QLabel("Aulas del examen")
+        titulo.setObjectName("sectionTitle")
+        encabezado.addWidget(titulo)
+        encabezado.addStretch()
+        for clave, nombre in (
+            ("lleno", "Sala llena"),
+            ("asignado", "Asignación completa"),
+            ("disponible", "Con cupo"),
+        ):
+            punto = QLabel("●")
+            punto.setObjectName("legendDot")
+            self._pintar_estado(punto, clave)
+            texto = QLabel(nombre)
+            texto.setObjectName("legendText")
+            encabezado.addWidget(punto)
+            encabezado.addWidget(texto)
+            encabezado.addSpacing(12)
+        layout.addLayout(encabezado)
 
         hero = QFrame()
         hero.setObjectName("counterHero")
         hero_layout = QVBoxLayout(hero)
-        hero_layout.setContentsMargins(24, 20, 24, 20)
-        hero_layout.setSpacing(3)
+        hero_layout.setContentsMargins(22, 16, 22, 16)
+        hero_layout.setSpacing(2)
 
         eyebrow = QLabel("ASISTENCIA EN VIVO")
         eyebrow.setObjectName("counterEyebrow")
@@ -289,55 +486,28 @@ class ContadorMixin:
         self.progress_asistencia = QProgressBar()
         self.progress_asistencia.setRange(0, 100)
         self.progress_asistencia.setValue(0)
-        self.progress_asistencia.setFormat("")
+        self.progress_asistencia.setTextVisible(False)
         self.progress_asistencia.setObjectName("mainProgress")
         hero_layout.addWidget(self.progress_asistencia)
 
-        bottom = QHBoxLayout()
+        abajo = QHBoxLayout()
         self.lbl_contador_pendientes = QLabel("0 pendientes")
         self.lbl_contador_pendientes.setObjectName("counterPending")
-        self.lbl_contador_porcentaje = QLabel("0.0% de asistencia")
+        self.lbl_contador_porcentaje = QLabel("0% de asistencia")
         self.lbl_contador_porcentaje.setObjectName("counterPercent")
-        bottom.addWidget(self.lbl_contador_pendientes)
-        bottom.addStretch()
-        bottom.addWidget(self.lbl_contador_porcentaje)
-        hero_layout.addLayout(bottom)
-        layout.addWidget(hero)
+        abajo.addWidget(self.lbl_contador_pendientes)
+        abajo.addStretch()
+        abajo.addWidget(self.lbl_contador_porcentaje)
+        hero_layout.addLayout(abajo)
 
-        section_title = QLabel("Cursos y ocupación de asientos")
-        section_title.setObjectName("sectionTitle")
-        layout.addWidget(section_title)
+        self.lbl_contador_estado = QLabel("Con cupo")
+        self.lbl_contador_estado.setObjectName("counterState")
+        self.lbl_contador_estado.setAlignment(Qt.AlignCenter)
+        self._pintar_estado(self.lbl_contador_estado, "disponible")
+        hero_layout.addWidget(self.lbl_contador_estado, alignment=Qt.AlignCenter)
 
-        courses_scroll = QScrollArea()
-        courses_scroll.setWidgetResizable(True)
-        courses_scroll.setFrameShape(QFrame.NoFrame)
-        courses_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        courses = QWidget()
-        courses.setObjectName("coursesContainer")
-        self.cursos_layout = QGridLayout(courses)
-        self.cursos_layout.setContentsMargins(2, 2, 2, 2)
-        self.cursos_layout.setSpacing(12)
-        courses_scroll.setWidget(courses)
-        layout.addWidget(courses_scroll, stretch=1)
-
-        history_title = QLabel("Últimos ingresos registrados")
-        history_title.setObjectName("sectionTitle")
-        layout.addWidget(history_title)
-
-        self.tabla_ultimos = QTableWidget(0, 4)
-        self.tabla_ultimos.setHorizontalHeaderLabels(
-            ["Hora", "Método", "Resultado", "Estación"]
-        )
-        self.tabla_ultimos.horizontalHeader().setSectionResizeMode(
-            QHeaderView.Stretch
-        )
-        self.tabla_ultimos.setObjectName("historyTable")
-        self.tabla_ultimos.setMaximumHeight(170)
-        self.tabla_ultimos.setAlternatingRowColors(True)
-        self.tabla_ultimos.verticalHeader().setVisible(False)
-        self.tabla_ultimos.setShowGrid(False)
-        self.tabla_ultimos.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.tabla_ultimos.setSelectionBehavior(QTableWidget.SelectRows)
-        layout.addWidget(self.tabla_ultimos)
+        self._anillo = _AnilloCursos(hero)
+        layout.addWidget(self._anillo, stretch=1)
+        _repintar(tab_contador)
 
         self.tabs.addTab(tab_contador, "Contador en Vivo")

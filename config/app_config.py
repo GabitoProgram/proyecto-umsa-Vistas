@@ -1,15 +1,32 @@
 import json
 import os
+import sys
 from typing import Optional
 
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "app_config.json")
+
+def _config_file():
+    if getattr(sys, "frozen", False):
+        return os.path.join(
+            os.path.dirname(sys.executable), "config", "app_config.json"
+        )
+    return os.path.join(os.path.dirname(__file__), "app_config.json")
+
+
+CONFIG_FILE = _config_file()
 ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
 
 
 class AppConfig:
     @staticmethod
     def get_api_base_url() -> str:
-        """Devuelve la URL de la API desde el entorno o el archivo .env."""
+        """Devuelve la URL configurada, priorizando el JSON externo."""
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as file:
+                valor = json.load(file).get("api_base_url")
+                if valor:
+                    return str(valor).rstrip("/")
+        except (OSError, ValueError):
+            pass
         valor = os.getenv("API_BASE_URL")
         if valor:
             return valor.rstrip("/")

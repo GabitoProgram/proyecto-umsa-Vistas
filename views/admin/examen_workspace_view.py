@@ -369,6 +369,15 @@ class ExamenWorkspaceView(QWidget):
         }
         QPushButton#btnFantasma:hover { background: #E2E8F0; color: #0F172A; }
 
+        /* ---------- Botón compacto para celdas de tabla ---------- */
+        QPushButton#btnTabla {
+            background: #1E54B7; color: #FFFFFF; border: none;
+            border-radius: 8px; padding: 0 12px;
+            font-size: 12px; font-weight: 700;
+        }
+        QPushButton#btnTabla:hover   { background: #17449A; }
+        QPushButton#btnTabla:pressed { background: #12367D; }
+
         /* ---------- Campos ---------- */
         QLineEdit#buscador {
             background: #FFFFFF; border: 1px solid #D5DEE9;
@@ -523,7 +532,7 @@ class ExamenWorkspaceView(QWidget):
         tabla.setEditTriggers(QTableWidget.NoEditTriggers)
         tabla.setSelectionBehavior(QTableWidget.SelectRows)
         tabla.verticalHeader().setVisible(False)
-        tabla.verticalHeader().setDefaultSectionSize(52)
+        tabla.verticalHeader().setDefaultSectionSize(56)
         tabla.horizontalHeader().setHighlightSections(False)
         tabla.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
@@ -733,7 +742,7 @@ class ExamenWorkspaceView(QWidget):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         # Ancho fijo amplio para la columna Acción así jamás recorta el botón
         header.setSectionResizeMode(7, QHeaderView.Fixed)
-        self.tabla_postulantes.setColumnWidth(7, 175)
+        self.tabla_postulantes.setColumnWidth(7, 190)
         self.tabla_postulantes.setMinimumHeight(360)
         l.addWidget(self._en_panel(self.tabla_postulantes), stretch=1)
         return w
@@ -883,19 +892,24 @@ class ExamenWorkspaceView(QWidget):
                     item.setForeground(verde if postulante.get("rostro_habilitado") else gris)
                 self.tabla_postulantes.setItem(fila, columna, item)
 
-            # Botón con el mismo estilo exacto de "Generar reporte" (btnPrimario).
+            # Botón compacto (btnTabla): cabe en la columna sin recortarse.
             # La celda y el botón llevan parent para no existir nunca como ventanas sueltas.
             celda = QWidget(self.tabla_postulantes)
             lay_celda = QHBoxLayout(celda)
-            lay_celda.setContentsMargins(8, 7, 8, 7)
+            lay_celda.setContentsMargins(10, 0, 10, 0)
 
-            boton = self._boton("Editar asiento", "primario", "editar", alto=36)
-            boton.setParent(celda)
-            boton.setMinimumWidth(150)
+            boton = QPushButton("Editar asiento", celda)
+            boton.setObjectName("btnTabla")
+            boton.setCursor(Qt.PointingHandCursor)
+            boton.setFocusPolicy(Qt.NoFocus)
+            boton.setFixedHeight(32)
+            boton.setMinimumWidth(130)
+            boton.setIcon(_icono("editar", "#FFFFFF", ancho=18))
+            boton.setIconSize(QSize(18, 20))
             boton.clicked.connect(
                 lambda _checked=False, p=postulante: self.editar_asignacion_postulante(p)
             )
-            lay_celda.addWidget(boton)
+            lay_celda.addWidget(boton, 0, Qt.AlignVCenter)
             self.tabla_postulantes.setCellWidget(fila, 7, celda)
 
     def editar_asignacion_postulante(self, postulante):

@@ -2,9 +2,16 @@ import sys
 import os
 import logging
 import types
+import importlib
+
+def get_base_path():
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
 
 # Asegurar que la raíz del proyecto esté en el PYTHONPATH
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = get_base_path()
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
@@ -12,6 +19,14 @@ if ROOT_DIR not in sys.path:
 desktop_package = types.ModuleType("desktop")
 desktop_package.__path__ = [ROOT_DIR]
 sys.modules.setdefault("desktop", desktop_package)
+for _subpaquete in ("biometria", "config", "api", "ui", "views"):
+    _alias = types.ModuleType(f"desktop.{_subpaquete}")
+    _alias.__path__ = [os.path.join(ROOT_DIR, _subpaquete)]
+    sys.modules.setdefault(f"desktop.{_subpaquete}", _alias)
+    try:
+        sys.modules[f"desktop.{_subpaquete}"] = importlib.import_module(_subpaquete)
+    except ModuleNotFoundError:
+        pass
 
 from PySide6.QtWidgets import QApplication
 from app_controller import AppController
@@ -28,7 +43,7 @@ def main():
     app = QApplication(sys.argv)
 
     # Cargar QSS
-    qss_path = os.path.join(os.path.dirname(__file__), "assets", "styles.qss")
+    qss_path = os.path.join(ROOT_DIR, "assets", "styles.qss")
     if os.path.exists(qss_path):
         with open(qss_path, "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())

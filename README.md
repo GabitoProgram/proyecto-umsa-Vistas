@@ -9,7 +9,7 @@ ejecuta en una terminal y el backend en otra.
 ## Requisitos
 
 - Windows 10/11.
-- Python 3.13 recomendado para la interfaz actual.
+- Python 3.11 para desarrollo y generación del ejecutable.
 - Backend UMSA ejecutándose.
 - PostgreSQL funcionando en la máquina del backend.
 - Git.
@@ -18,18 +18,14 @@ ejecuta en una terminal y el backend en otra.
 
 ## Instalar dependencias
 
-Este frontend se ejecuta actualmente con la instalación de Python 3.13 del
-equipo; no utiliza un entorno virtual propio `venv`. Instala las dependencias
-con Python 3.13:
+Instala las dependencias con Python 3.11:
 
 ```powershell
-py -3.13 -m pip install --upgrade pip
-py -3.13 -m pip install PySide6 requests pandas openpyxl opencv-python pyusb libusb
+py -3.11 -m pip install -r requirements.txt
 ```
 
-El frontend no incluye actualmente un `requirements.txt`; por eso las
-dependencias principales se instalan directamente en Python 3.13. Si ya están
-instaladas, no es necesario repetir este paso.
+Para generar el ejecutable se usa PyInstaller, incluido en
+`requirements.txt`.
 
 ## Configurar la URL del backend
 

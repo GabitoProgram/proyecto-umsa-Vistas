@@ -1,0 +1,10 @@
+config/app_config.json
+.env
+__pycache__/
+**/__pycache__/
+build/
+dist/
+*.spec
+venv/
+.venv/
+installer/output/

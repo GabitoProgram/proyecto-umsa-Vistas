@@ -1,0 +1,8 @@
+PySide6
+requests
+pandas
+openpyxl
+opencv-python
+pyusb
+libusb
+pyinstaller
