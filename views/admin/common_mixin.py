@@ -19,16 +19,53 @@ from desktop.views.admin.examen_workspace_view import ExamenWorkspaceView
 
 
 class CommonMixin:
-    def _obtener_lista(self, endpoint):
+    def _obtener_lista(self, endpoint, timeout=8):
         try:
             response = requests.get(
                 f"{self.api_base_url}{endpoint}",
                 headers=self._auth_headers(),
-                timeout=5
+                timeout=timeout
             )
+            if response.status_code == 401:
+                self._avisar_sesion_expirada()
+                return []
             return response.json() if response.status_code == 200 else []
         except (requests.RequestException, ValueError):
             return []
+
+    def _obtener_objeto(self, endpoint, timeout=8):
+        """Igual que _obtener_lista pero para endpoints que devuelven un objeto."""
+        try:
+            response = requests.get(
+                f"{self.api_base_url}{endpoint}",
+                headers=self._auth_headers(),
+                timeout=timeout
+            )
+            if response.status_code == 401:
+                self._avisar_sesion_expirada()
+                return None
+            if response.status_code != 200:
+                return None
+            datos = response.json()
+            return datos if isinstance(datos, dict) else None
+        except (requests.RequestException, ValueError):
+            return None
+
+    def _avisar_sesion_expirada(self):
+        """Avisa una sola vez y vuelve al login (el token ya no sirve)."""
+        if getattr(self, "_sesion_expirada_avisada", False):
+            return
+        self._sesion_expirada_avisada = True
+        QTimer.singleShot(0, self._mostrar_aviso_sesion_expirada)
+
+    def _mostrar_aviso_sesion_expirada(self):
+        QMessageBox.information(
+            self,
+            "Sesión expirada",
+            "Tu sesión expiró o fue cerrada. Vuelve a iniciar sesión.",
+        )
+        if hasattr(self, "cerrar_sesion"):
+            self.cerrar_sesion.emit()
 
     def _auth_headers(self):
         return {"Authorization": f"Bearer {self.token_data.get('access_token', '')}"}

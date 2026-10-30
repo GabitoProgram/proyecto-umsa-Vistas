@@ -34,6 +34,7 @@ import ctypes.util
 import os
 import sys
 import logging
+import threading
 import time
 
 from desktop.biometria.modelos import (
@@ -159,6 +160,13 @@ def buscar_libzkfp():
     return None
 
 
+# La SDK es global al proceso: si dos instancias llaman a Init/Terminate,
+# cerrar una deja a la otra sin lector (o la SDK crashea). Se cuenta cuántas
+# instancias la usan y solo se inicializa/termina en el primer/último uso.
+_sdk_candado = threading.Lock()
+_sdk_usuarios = 0
+
+
 class ZKFingerSDK:
     """Acceso a la ZKFinger SDK mediante ctypes."""
 
@@ -236,21 +244,30 @@ class ZKFingerSDK:
         return self.ruta_lib is not None
 
     def inicializar(self):
-        """Inicializa las librerías de captura y algoritmo."""
-        ret = self._lib.ZKFPM_Init()
-        if ret not in (ZKFP_ERR_OK, 1):  # 1 = ya inicializada
-            raise SDKNoDisponibleError(
-                f"No se pudo inicializar la ZKFinger SDK (error {ret}). "
-                "Verifica que la versión de libzkfp.so corresponda a tu lector."
-            )
+        """Inicializa las librerías de captura y algoritmo (una sola vez)."""
+        global _sdk_usuarios
+        with _sdk_candado:
+            if _sdk_usuarios == 0:
+                ret = self._lib.ZKFPM_Init()
+                if ret not in (ZKFP_ERR_OK, 1):  # 1 = ya inicializada
+                    raise SDKNoDisponibleError(
+                        f"No se pudo inicializar la ZKFinger SDK (error {ret}). "
+                        "Verifica que la versión de libzkfp.so corresponda a tu lector."
+                    )
+            _sdk_usuarios += 1
         self._inicializada = True
 
     def terminar(self):
+        global _sdk_usuarios
         if self.hdispositivo:
             self.cerrar_dispositivo()
-        if self._inicializada:
-            self._lib.ZKFPM_Terminate()
-            self._inicializada = False
+        with _sdk_candado:
+            if self._inicializada:
+                _sdk_usuarios = max(0, _sdk_usuarios - 1)
+                # Solo se termina cuando ya nadie usa la SDK.
+                if _sdk_usuarios == 0:
+                    self._lib.ZKFPM_Terminate()
+                self._inicializada = False
 
     # ------------------------------------------------------------------
     def cantidad_dispositivos(self) -> int:

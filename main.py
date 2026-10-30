@@ -1,8 +1,10 @@
 import sys
 import os
 import logging
+import threading
 import types
 import importlib
+from logging.handlers import RotatingFileHandler
 
 def get_base_path():
     if getattr(sys, "frozen", False):
@@ -33,12 +35,62 @@ from app_controller import AppController
 from api.client import api
 from config.app_config import AppConfig
 
-def main():
-    # Configurar logging para diagnóstico de huella
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+
+def _configurar_logging():
+    """Deja un rastro en disco: en el .exe no hay consola (console=False)."""
+    formato = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    consola = logging.StreamHandler()
+    consola.setFormatter(formato)
+    root.addHandler(consola)
+    try:
+        carpeta = os.path.join(
+            os.environ.get("LOCALAPPDATA", ROOT_DIR), "SistemaAdmision", "logs"
+        )
+        os.makedirs(carpeta, exist_ok=True)
+        archivo = RotatingFileHandler(
+            os.path.join(carpeta, "app.log"),
+            maxBytes=2 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        archivo.setFormatter(formato)
+        root.addHandler(archivo)
+    except OSError:
+        pass
+
+
+def _instalar_excepthook():
+    """Registra errores no controlados en vez de morir en silencio."""
+    def _hook(tipo, valor, traza):
+        logging.getLogger("excepcion").critical(
+            "Error no controlado", exc_info=(tipo, valor, traza)
+        )
+        try:
+            from PySide6.QtWidgets import QApplication, QMessageBox
+            # Los cuadros de diálogo solo se crean desde el hilo de la GUI.
+            if (QApplication.instance() is not None
+                    and threading.current_thread() is threading.main_thread()):
+                QMessageBox.critical(
+                    None,
+                    "Error inesperado",
+                    "Ocurrió un error inesperado. El detalle quedó registrado "
+                    "en el archivo de logs.\n\n"
+                    f"{tipo.__name__}: {valor}",
+                )
+        except Exception:
+            pass
+        sys.__excepthook__(tipo, valor, traza)
+
+    sys.excepthook = _hook
+
+
+def main():
+    _configurar_logging()
+    _instalar_excepthook()
 
     app = QApplication(sys.argv)
 

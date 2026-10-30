@@ -125,6 +125,9 @@ class _AnilloCursos(QWidget):
         self._vacio.setVisible(not self._tarjetas)
         self._reubicar()
 
+    def set_mensaje_vacio(self, mensaje):
+        self._vacio.setText(mensaje)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._reubicar()
@@ -244,10 +247,11 @@ class ContadorMixin:
                 continue
             for aula in examen.get("aulas") or []:
                 tarjetas.append(self._crear_tarjeta_aula(aula, examen))
+        # No mostrar aulas de otros exámenes: confundía al operador.
         if not tarjetas:
-            for examen in list(contadores or []):
-                for aula in examen.get("aulas") or []:
-                    tarjetas.append(self._crear_tarjeta_aula(aula, examen))
+            self._anillo.set_mensaje_vacio(
+                "Este examen no tiene aulas asignadas todavía."
+            )
         self._anillo.set_tarjetas(tarjetas)
 
     def _pintar_estado(self, widget, estado):

@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QFormLayout,
     QMessageBox, QFileDialog, QFrame, QComboBox
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from desktop.api.client import api
 
 class DialogNuevoPostulante(QDialog):
@@ -121,6 +121,13 @@ class PostulantesView(QWidget):
     def __init__(self):
         super().__init__()
         self.postulantes_data = []
+        # La tabla carga por páginas: con miles de postulantes no conviene
+        # traerlos ni dibujarlos todos de una vez.
+        self._tamano_pagina = 60
+        self._timer_busqueda = QTimer(self)
+        self._timer_busqueda.setSingleShot(True)
+        self._timer_busqueda.setInterval(300)
+        self._timer_busqueda.timeout.connect(lambda: self.cargar_postulantes(True))
         self.init_ui()
         self.cargar_postulantes()
 
@@ -168,10 +175,17 @@ class PostulantesView(QWidget):
         self.btn_refrescar = QPushButton("Actualizar")
         self.btn_refrescar.setFixedHeight(40)
         self.btn_refrescar.setCursor(Qt.PointingHandCursor)
-        self.btn_refrescar.clicked.connect(self.cargar_postulantes)
+        self.btn_refrescar.clicked.connect(lambda: self.cargar_postulantes(True))
+
+        self.btn_mostrar_mas = QPushButton("Mostrar más")
+        self.btn_mostrar_mas.setFixedHeight(40)
+        self.btn_mostrar_mas.setCursor(Qt.PointingHandCursor)
+        self.btn_mostrar_mas.setVisible(False)
+        self.btn_mostrar_mas.clicked.connect(lambda: self.cargar_postulantes(False))
 
         filtro_layout.addWidget(self.txt_buscar)
         filtro_layout.addWidget(self.lbl_resultados)
+        filtro_layout.addWidget(self.btn_mostrar_mas)
         filtro_layout.addWidget(self.btn_refrescar)
         layout.addLayout(filtro_layout)
 
@@ -189,11 +203,20 @@ class PostulantesView(QWidget):
         self.tabla.setAlternatingRowColors(True)
         layout.addWidget(self.tabla)
 
-    def cargar_postulantes(self):
+    def cargar_postulantes(self, reiniciar=True):
+        consulta = self.txt_buscar.text().strip()
+        if reiniciar:
+            self.postulantes_data = []
         self.btn_refrescar.setEnabled(False)
-        self.postulantes_data = api.listar_postulantes(limit=1000)
+        nuevos = api.listar_postulantes(
+            skip=len(self.postulantes_data),
+            limit=self._tamano_pagina,
+            q=consulta or None,
+        )
+        self.postulantes_data.extend(nuevos)
         self.poblar_tabla(self.postulantes_data)
         self.btn_refrescar.setEnabled(True)
+        self.btn_mostrar_mas.setVisible(len(nuevos) >= self._tamano_pagina)
 
     def poblar_tabla(self, lista):
         self.tabla.setRowCount(0)
@@ -248,25 +271,9 @@ class PostulantesView(QWidget):
             self.tabla.setItem(row_idx, 5, item_huella)
 
     def filtrar_tabla(self, texto: str):
-        texto = self._normalizar_busqueda(texto)
-        if not texto:
-            self.poblar_tabla(self.postulantes_data)
-            return
-
-        filtrados = []
-        for p in self.postulantes_data:
-            ci = self._normalizar_busqueda(p.get("ci", ""))
-            nombres = self._normalizar_busqueda(p.get("nombres", ""))
-            apellidos = self._normalizar_busqueda(p.get("apellidos", ""))
-            if (
-                texto in ci
-                or texto in nombres
-                or texto in apellidos
-                or texto in f"{nombres} {apellidos}"
-            ):
-                filtrados.append(p)
-
-        self.poblar_tabla(filtrados)
+        # La búsqueda va al servidor (con espera): así encuentra postulantes
+        # que todavía no se cargaron en la tabla.
+        self._timer_busqueda.start()
 
     @staticmethod
     def _normalizar_busqueda(valor):

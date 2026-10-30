@@ -52,6 +52,7 @@ from desktop.biometria import (
     ErrorLector,
     prefijar_plantilla,
 )
+from desktop.biometria.modelos import UMBRAL_CONSISTENCIA
 
 log = logging.getLogger(__name__)
 
@@ -318,22 +319,80 @@ class EnrolamientoController:
         """Ejecuta un paso del enrolamiento (asíncrono vía QTimer)."""
         if not self._activo:
             return
+        if getattr(self.lector, "soporta_sondeo", False):
+            # ZKTeco admite consultas sin espera: se sondea con un QTimer en
+            # vez de bloquear la interfaz durante los 3 toques.
+            self._capturas = []
+            self._sondear()
+            return
         try:
             log.debug("EnrolamientoController: iniciando enrolar_dedo...")
             plantilla = self.lector.enrolar_dedo(self.dedo, self._on_avance)
             log.debug("EnrolamientoController: enrolamiento completado OK")
             self._activo = False
+            self._cerrar_lector()
             self.dialog._on_plantilla_lista(plantilla, self.lector.tipo)
         except Exception as error:
             log.exception("Error en enrolamiento")
-            self._activo = False
-            self.dialog._on_error(str(error))
-        finally:
-            if self.lector and self.lector.conectado:
-                try:
-                    self.lector.cerrar()
-                except Exception:
-                    pass
+            self._fallar(str(error))
+
+    # -- Enrolamiento ZKTeco sin bloquear -------------------------------
+    def _sondear(self):
+        if not self._activo:
+            return
+        try:
+            datos = self.lector.capturar_para_enrolar_no_bloqueante()
+        except Exception as error:
+            log.exception("Error sondeando el lector ZKTeco")
+            self._fallar(str(error))
+            return
+        if datos is None:
+            if self._activo:
+                QTimer.singleShot(120, self._sondear)
+            return
+
+        imagen, plantilla, ancho, alto = datos
+        if self._capturas:
+            score = self.lector.sdk.comparar_plantillas(
+                self._capturas[-1], plantilla
+            )
+            if score < 0:
+                self._fallar(f"Error comparando capturas (código {score})")
+                return
+            if score < UMBRAL_CONSISTENCIA:
+                self._fallar(
+                    "Parece que cambiaste de dedo. Empieza de nuevo y usa "
+                    "siempre el MISMO dedo."
+                )
+                return
+        self._capturas.append(plantilla)
+        self.dialog._on_avance(len(self._capturas), 3, imagen, ancho, alto)
+
+        if len(self._capturas) < 3:
+            # Pausa para que el usuario levante el dedo entre toques.
+            QTimer.singleShot(600, self._sondear)
+            return
+        try:
+            final = self.lector.sdk.combinar_plantillas(*self._capturas)
+        except Exception as error:
+            log.exception("Error combinando plantillas")
+            self._fallar(str(error))
+            return
+        self._activo = False
+        self._cerrar_lector()
+        self.dialog._on_plantilla_lista(final, self.lector.tipo)
+
+    def _fallar(self, mensaje):
+        self._activo = False
+        self._cerrar_lector()
+        self.dialog._on_error(mensaje)
+
+    def _cerrar_lector(self):
+        if self.lector and self.lector.conectado:
+            try:
+                self.lector.cerrar()
+            except Exception:
+                pass
 
     def _on_avance(self, completadas, total, imagen, ancho=0, alto=0):
         """Callback de progreso llamado por libfprint (hilo principal)."""
@@ -341,8 +400,9 @@ class EnrolamientoController:
             self.dialog._on_avance(completadas, total, imagen, ancho, alto)
 
     def detener(self):
-        """Detiene el proceso de enrolamiento."""
+        """Detiene el proceso de enrolamiento y libera el lector."""
         self._activo = False
+        self._cerrar_lector()
 
 
 # ======================================================================
@@ -493,7 +553,7 @@ class DialogCapturaHuella(QDialog):
         self.btn_cancelar.setObjectName("btnSecundario")
         self.btn_cancelar.setMinimumHeight(40)
         self.btn_cancelar.setCursor(Qt.PointingHandCursor)
-        self.btn_cancelar.clicked.connect(self.reject)
+        self.btn_cancelar.clicked.connect(self._cancelar_o_confirmar)
 
         self.btn_guardar_habilitaciones = QPushButton("Guardar cambios")
         self.btn_guardar_habilitaciones.setObjectName("btnExito")
@@ -840,7 +900,9 @@ class DialogCapturaHuella(QDialog):
         # Crear el lector en el hilo principal (libfprint necesita el main context de GLib)
         log.debug("Creando lector en hilo principal...")
         try:
-            lector = crear_lector(lector_info.tipo, lector_info.indice_sdk)
+            lector = crear_lector(
+                lector_info.tipo, lector_info.indice_sdk, info=lector_info
+            )
             log.debug("Lector creado OK: %s", lector)
         except Exception as e:
             log.exception("Error creando lector")
@@ -874,9 +936,13 @@ class DialogCapturaHuella(QDialog):
         self.lbl_estado.setText("Huella registrada. La plantilla está lista.")
         self.btn_iniciar.setEnabled(False)
         self.btn_iniciar.setText("Registrada")
-        self.btn_cancelar.setText("Aceptar")
-        # Cerrar el diálogo automáticamente para que se envíe la petición POST
-        self.accept()
+        # No cerrar automáticamente: antes el diálogo desaparecía solo y se
+        # enviaba la huella sin que el operador pudiera revisar el estado.
+        self.btn_cancelar.setText("Guardar huella")
+        self.btn_cancelar.setObjectName("btnExito")
+        self.btn_cancelar.setEnabled(True)
+        self.btn_cancelar.style().unpolish(self.btn_cancelar)
+        self.btn_cancelar.style().polish(self.btn_cancelar)
 
     def _on_error(self, mensaje):
         self.lbl_estado.setText(f"Error: {mensaje}")
@@ -911,6 +977,13 @@ class DialogCapturaHuella(QDialog):
                 return
 
     # ══════════════════════ CIERRE ══════════════════════
+    def _cancelar_o_confirmar(self):
+        """El botón inferior guarda la huella capturada o cancela el diálogo."""
+        if self.plantilla_final is not None:
+            self.accept()
+        else:
+            self.reject()
+
     def reject(self):
         self._detener_worker()
         super().reject()

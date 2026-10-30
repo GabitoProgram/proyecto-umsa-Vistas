@@ -1,6 +1,7 @@
 import logging
 import requests
 from datetime import date
+from urllib.parse import quote
 
 log = logging.getLogger(__name__)
 from PySide6.QtWidgets import (
@@ -27,7 +28,10 @@ class BiometriaMixin:
         id_post = postulante.get("id_postulante")
         if not id_post:
             ci = postulante.get("ci")
-            full_postulante = next((item for item in self._obtener_lista("/postulantes?limit=1000") if str(item.get("ci")) == str(ci)), None)
+            full_postulante = (
+                self._obtener_objeto(f"/postulantes/buscar?ci={quote(str(ci))}")
+                if ci else None
+            )
             if full_postulante:
                 id_post = full_postulante.get("id_postulante")
             if not id_post:
@@ -84,11 +88,12 @@ class BiometriaMixin:
 
     def cambiar_estado_rostro_gestion(self, postulante, id_rostro=None, habilitar=True):
         if not id_rostro:
-            id_post = postulante.get("id_postulante")
-            full_postulante = next(
-                (item for item in self._obtener_lista("/postulantes?limit=1000")
-                 if item.get("id_postulante") == id_post),
-                None,
+            id_rostro = postulante.get("id_rostro")
+        if not id_rostro:
+            ci = postulante.get("ci")
+            full_postulante = (
+                self._obtener_objeto(f"/postulantes/buscar?ci={quote(str(ci))}")
+                if ci else None
             ) or {}
             id_rostro = full_postulante.get("id_rostro")
         if not id_rostro:
@@ -132,7 +137,10 @@ class BiometriaMixin:
         id_post = postulante.get("id_postulante")
         if not id_post:
             ci = postulante.get("ci")
-            full_postulante = next((item for item in self._obtener_lista("/postulantes?limit=1000") if str(item.get("ci")) == str(ci)), None)
+            full_postulante = (
+                self._obtener_objeto(f"/postulantes/buscar?ci={quote(str(ci))}")
+                if ci else None
+            )
             if full_postulante:
                 id_post = full_postulante.get("id_postulante")
             if not id_post:
@@ -217,10 +225,12 @@ class BiometriaMixin:
             log.debug("API POST /rostros/%s/huellas/%s devolvió %s: %s", id_post, tipo_dedo, respuesta.status_code, respuesta.text[:500])
             if respuesta.status_code in (200, 201):
                 cantidad = len(dedos_existentes | {tipo_dedo})
+                habilitados_ahora = len(dedos_habilitados_en_dlg)
+                estado_txt = "habilitada" if habilitar_este else "registrada (sin habilitar)"
                 QMessageBox.information(
                     self, "Huella registrada",
-                    f"Huella del {nombre_dedo} registrada y habilitada.\n"
-                    f"Total de dedos habilitados: {cantidad}/10"
+                    f"Huella del {nombre_dedo} {estado_txt}.\n"
+                    f"Total de dedos habilitados: {habilitados_ahora}/10"
                 )
                 if boton:
                     boton.setText(f"Huella ({cantidad}/10)")

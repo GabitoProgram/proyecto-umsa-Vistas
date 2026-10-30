@@ -1,4 +1,5 @@
 import os
+import time
 
 import requests
 from PySide6.QtCore import Qt, Signal, QPointF
@@ -12,7 +13,6 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
-    QApplication,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from config.app_config import AppConfig
+from desktop.views.checkin.workers import _ejecutar_en_hilo
 
 
 def _fuente(px, peso=QFont.Bold, espaciado=0.0):
@@ -141,6 +142,9 @@ class LoginView(QWidget):
     def __init__(self, parent=None, api_base_url=None):
         super().__init__(parent)
         self.api_base_url = api_base_url or AppConfig.get_api_base_url()
+        self._login_en_curso = False
+        self._entrega_login = None
+        self._ultima_actividad = time.monotonic()
         self.init_ui()
 
     # ------------------------------------------------------------------
@@ -157,6 +161,16 @@ class LoginView(QWidget):
 
         main_layout.addWidget(self._crear_panel_izquierdo(), 45)
         main_layout.addWidget(self._crear_panel_derecho(), 55)
+
+    def registrar_actividad(self, *_):
+        self._ultima_actividad = time.monotonic()
+
+    def hay_actividad(self):
+        """True si hay un inicio de sesión en curso."""
+        return self._login_en_curso
+
+    def inactivo_por(self, segundos):
+        return time.monotonic() - self._ultima_actividad >= segundos
 
     def limpiar_formulario(self):
         self.txt_user.clear()
@@ -310,6 +324,8 @@ class LoginView(QWidget):
 
         self.txt_user.returnPressed.connect(self.txt_pass.setFocus)
         self.txt_pass.returnPressed.connect(self.procesar_login)
+        self.txt_user.textChanged.connect(self.registrar_actividad)
+        self.txt_pass.textChanged.connect(self.registrar_actividad)
 
         # Error
         self.lbl_error = QLabel("")
@@ -359,6 +375,8 @@ class LoginView(QWidget):
     # Lógica
     # ------------------------------------------------------------------
     def procesar_login(self):
+        if self._login_en_curso:
+            return
         username = self.txt_user.text().strip()
         password = self.txt_pass.text()
 
@@ -366,38 +384,49 @@ class LoginView(QWidget):
             self.mostrar_error("Por favor, ingrese su usuario y contraseña.")
             return
 
+        self._login_en_curso = True
         self.btn_ingresar.setEnabled(False)
         self.btn_ingresar.setText("Verificando...")
         self.lbl_error.setVisible(False)
-        QApplication.processEvents()  # repinta el botón antes de la petición
 
-        try:
+        def pedir():
             # Login OAuth2 estándar compatible con FastAPI form-data
             res = requests.post(
                 f"{self.api_base_url}/auth/login",
                 data={"username": username, "password": password},
                 timeout=4,
             )
-            if res.status_code == 200:
-                data = res.json()
-                self.login_exitoso.emit(data)
-            elif res.status_code == 401:
-                self.mostrar_error("Las credenciales ingresadas son incorrectas.")
-                self.txt_pass.clear()
-                self.txt_pass.setFocus()
-            else:
-                self.mostrar_error(
-                    f"Error del servidor ({res.status_code}). Intente más tarde."
-                )
-        except requests.exceptions.ConnectionError:
+            try:
+                datos = res.json()
+            except ValueError:
+                datos = {}
+            return res.status_code, datos
+
+        # La petición va en un hilo: antes congelaba la interfaz hasta 4 s.
+        self._entrega_login = _ejecutar_en_hilo(pedir, self._login_terminado)
+
+    def _login_terminado(self, resultado, error):
+        self._login_en_curso = False
+        self.btn_ingresar.setEnabled(True)
+        self.btn_ingresar.setText("Ingresar")
+
+        if error is not None:
             self.mostrar_error(
                 "No se pudo conectar con el servidor. Verifique la conexión."
             )
-        except Exception as e:
-            self.mostrar_error(f"Error inesperado: {str(e)}")
-        finally:
-            self.btn_ingresar.setEnabled(True)
-            self.btn_ingresar.setText("Ingresar")
+            return
+
+        status, data = resultado
+        if status == 200:
+            self.login_exitoso.emit(data)
+        elif status == 401:
+            self.mostrar_error("Las credenciales ingresadas son incorrectas.")
+            self.txt_pass.clear()
+            self.txt_pass.setFocus()
+        else:
+            self.mostrar_error(
+                f"Error del servidor ({status}). Intente más tarde."
+            )
 
     def mostrar_error(self, mensaje: str):
         self.lbl_error.setText(mensaje)

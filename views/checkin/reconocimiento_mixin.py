@@ -27,6 +27,11 @@ TIEMPO_PAUSA_MS = 6000  # pausa tras identificar a alguien
 # En Windows, DirectShow abre la cámara mucho más rápido que el sistema
 # predeterminado (MSMF). Si tu cámara se ve negra o falla, pon False.
 USAR_DIRECTSHOW = True
+
+# Foto cuadrada del postulante en la ficha de resultado.
+# Si la ventana es baja, bájalo a 170 o 180.
+TAMANO_FOTO_FICHA = 200
+RADIO_FOTO_FICHA = 18   # esquinas redondeadas (0 = cuadrado puro)
 _COLORES_AVATAR = (
     ("#DBEAFE", "#1E40AF"),
     ("#DCFCE7", "#166534"),
@@ -176,6 +181,28 @@ def _pixmap_espera(lado=116):
     _dibujar_persona(p, lado / 2, lado / 2, lado * 0.72, "#2F6FED", 3)
     p.end()
     return pm
+
+
+def _pixmap_cuadrado(imagen, lado, radio=RADIO_FOTO_FICHA):
+    """Recorta la foto a un cuadrado con esquinas suaves."""
+    escalada = QPixmap.fromImage(imagen).scaled(
+        lado, lado, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+    )
+    x = max(0, (escalada.width() - lado) // 2)
+    # Se recorta un poco más arriba del centro para no cortar la cara.
+    y = max(0, int((escalada.height() - lado) * 0.25))
+    recorte = escalada.copy(x, y, lado, lado)
+
+    salida = QPixmap(lado, lado)
+    salida.fill(Qt.transparent)
+    pintor = QPainter(salida)
+    pintor.setRenderHint(QPainter.Antialiasing)
+    ruta = QPainterPath()
+    ruta.addRoundedRect(QRectF(0, 0, lado, lado), radio, radio)
+    pintor.setClipPath(ruta)
+    pintor.drawPixmap(0, 0, recorte)
+    pintor.end()
+    return salida
 
 
 # ======================================================================
@@ -552,6 +579,12 @@ ESTILOS_RECONOCIMIENTO = """
         border-radius: 11px; padding: 4px 12px;
         font-size: 12px; font-weight: 700;
     }
+    /* CI grande y oscuro para que se lea de lejos */
+    QLabel#fichaCi {
+        background: #0F2C59; color: #FFFFFF;
+        border-radius: 12px; padding: 5px 16px;
+        font-size: 20px; font-weight: 800;
+    }
 
     QFrame#tile {
         background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 14px;
@@ -562,6 +595,12 @@ ESTILOS_RECONOCIMIENTO = """
     QLabel#tileEtiqueta { color: #64748B; }
     QLabel#tileValor    { color: #0F172A; font-size: 20px; font-weight: 800; }
     QLabel#tileValorGrande { color: #1E54B7; font-size: 30px; font-weight: 800; }
+    /* Aula en naranja y asiento en azul fuerte, ambos con texto blanco */
+    QFrame#tileAula    { background: #EA580C; border: none; border-radius: 14px; }
+    QFrame#tileAsiento { background: #1E54B7; border: none; border-radius: 14px; }
+    QLabel#tileEtiquetaClaro { color: rgba(255, 255, 255, 0.85); }
+    QLabel#tileValorAula     { color: #FFFFFF; font-size: 26px; font-weight: 800; }
+    QLabel#tileValorAsiento  { color: #FFFFFF; font-size: 42px; font-weight: 800; }
 
     QFrame#motivo {
         background: #FEF2F2; border: 1px solid #FECACA; border-radius: 14px;
@@ -577,6 +616,21 @@ class ReconocimientoMixin:
         # La detección automática solo corre cuando su pestaña está visible.
         if index != self.tabs.indexOf(self.tab_reconocimiento):
             self.detener_auto_deteccion()
+
+        # El lector de huella tampoco debe quedar activo en otra pestaña:
+        # ocupaba el dispositivo y los reintentos programados seguían vivos.
+        tab_marcacion = getattr(self, "tab_marcacion", None)
+        indice_marcacion = self.tabs.indexOf(tab_marcacion)
+        if index != indice_marcacion:
+            if getattr(self, "_estacion_activa", False) and (
+                (self._identificacion and self._identificacion.activo)
+                or getattr(self, "_arrancando_identificacion", False)
+            ):
+                self._pausa_por_pestana = True
+                self.cancelar_identificacion(silencioso=True)
+        elif getattr(self, "_pausa_por_pestana", False):
+            self._pausa_por_pestana = False
+            self.reanudar_identificacion()
 
     def toggle_auto_deteccion(self):
         if self.auto_activo:
@@ -816,8 +870,8 @@ class ReconocimientoMixin:
         fondo, texto = _COLORES_AVATAR[indice]
         self.lbl_ficha_avatar.setText(_iniciales(nombre))
         self.lbl_ficha_avatar.setStyleSheet(
-            f"background: {fondo}; color: {texto}; border-radius: 40px;"
-            "font-size: 28px; font-weight: 800;"
+            f"background: {fondo}; color: {texto}; border-radius: {RADIO_FOTO_FICHA}px;"
+            f"font-size: {int(TAMANO_FOTO_FICHA * 0.34)}px; font-weight: 800;"
         )
         self.lbl_ficha_avatar.setPixmap(QPixmap())
         self.lbl_ficha_avatar.setText(_iniciales(nombre))
@@ -882,29 +936,32 @@ class ReconocimientoMixin:
             log.warning("La foto del postulante %s no es una imagen válida", id_postulante)
             return
 
-        lado = min(self.lbl_ficha_avatar.width(), self.lbl_ficha_avatar.height())
-        pixmap = QPixmap.fromImage(imagen).scaled(
-            lado, lado, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
-        )
-        self.lbl_ficha_avatar.setStyleSheet(
-            "background: #E2E8F0; border-radius: 40px;"
-        )
+        self.lbl_ficha_avatar.setStyleSheet("background: transparent; border: none;")
         self.lbl_ficha_avatar.setText("")
         self.lbl_ficha_avatar.setAlignment(Qt.AlignCenter)
-        self.lbl_ficha_avatar.setPixmap(pixmap)
+        self.lbl_ficha_avatar.setPixmap(_pixmap_cuadrado(imagen, TAMANO_FOTO_FICHA))
 
     # ══════════════════════ INTERFAZ ══════════════════════
-    def _crear_tile(self, etiqueta, destacado=False):
+    def _crear_tile_ficha(self, etiqueta, variante="tile"):
+        """Casilla de dato de la ficha. ``variante``: tile, tileAula o tileAsiento.
+
+        Tiene nombre propio porque esta clase se mezcla con MarcacionMixin,
+        que también define ``_crear_tile`` y lo tapaba.
+        """
         marco = QFrame()
-        marco.setObjectName("tileDestacado" if destacado else "tile")
+        marco.setObjectName(variante)
         lay = QVBoxLayout(marco)
         lay.setContentsMargins(14, 10, 14, 10)
         lay.setSpacing(2)
+        claro = variante in ("tileAula", "tileAsiento")
         lbl_etiqueta = QLabel(etiqueta)
-        lbl_etiqueta.setObjectName("tileEtiqueta")
+        lbl_etiqueta.setObjectName("tileEtiquetaClaro" if claro else "tileEtiqueta")
         lbl_etiqueta.setFont(_fuente_etiqueta(10, 1.5))
+        lbl_etiqueta.setAlignment(Qt.AlignCenter)
         valor = QLabel("—")
-        valor.setObjectName("tileValorGrande" if destacado else "tileValor")
+        nombre_valor = {"tileAula": "tileValorAula", "tileAsiento": "tileValorAsiento"}
+        valor.setObjectName(nombre_valor.get(variante, "tileValor"))
+        valor.setAlignment(Qt.AlignCenter)
         lay.addWidget(lbl_etiqueta)
         lay.addWidget(valor)
         return marco, valor
@@ -1078,46 +1135,46 @@ class ReconocimientoMixin:
         datos = QWidget()
         lay_datos = QVBoxLayout(datos)
         lay_datos.setContentsMargins(24, 22, 24, 12)
-        lay_datos.setSpacing(16)
+        lay_datos.setSpacing(10)
 
-        identidad = QHBoxLayout()
-        identidad.setSpacing(18)
+        # Foto cuadrada al centro
         self.lbl_ficha_avatar = QLabel("?")
-        self.lbl_ficha_avatar.setFixedSize(80, 80)
+        self.lbl_ficha_avatar.setFixedSize(TAMANO_FOTO_FICHA, TAMANO_FOTO_FICHA)
         self.lbl_ficha_avatar.setAlignment(Qt.AlignCenter)
-        identidad.addWidget(self.lbl_ficha_avatar, 0, Qt.AlignTop)
+        lay_datos.addStretch(1)
+        lay_datos.addWidget(self.lbl_ficha_avatar, 0, Qt.AlignHCenter)
 
-        col = QVBoxLayout()
-        col.setSpacing(6)
         self.auto_titulo = QLabel("Sin identificación")
         self.auto_titulo.setObjectName("fichaNombre")
+        self.auto_titulo.setAlignment(Qt.AlignCenter)
         self.auto_titulo.setWordWrap(True)
-        col.addWidget(self.auto_titulo)
+        lay_datos.addWidget(self.auto_titulo)
+
         chips = QHBoxLayout()
         chips.setSpacing(8)
         self.lbl_ficha_ci = QLabel("")
-        self.lbl_ficha_ci.setObjectName("fichaChip")
+        self.lbl_ficha_ci.setObjectName("fichaCi")
         self.lbl_ficha_carrera = QLabel("")
         self.lbl_ficha_carrera.setObjectName("fichaChip")
+        chips.addStretch()
         chips.addWidget(self.lbl_ficha_ci)
         chips.addWidget(self.lbl_ficha_carrera)
         chips.addStretch()
-        col.addLayout(chips)
+        lay_datos.addLayout(chips)
+
         self.lbl_ficha_materia = QLabel("")
         self.lbl_ficha_materia.setObjectName("fichaMateria")
+        self.lbl_ficha_materia.setAlignment(Qt.AlignCenter)
         self.lbl_ficha_materia.setWordWrap(True)
-        col.addWidget(self.lbl_ficha_materia)
-        identidad.addLayout(col, 1)
-        lay_datos.addStretch(1)
-        lay_datos.addLayout(identidad)
+        lay_datos.addWidget(self.lbl_ficha_materia)
 
         self.bloque_tiles = QWidget()
         tiles = QHBoxLayout(self.bloque_tiles)
         tiles.setContentsMargins(0, 0, 0, 0)
         tiles.setSpacing(10)
-        tile_aula, self.lbl_ficha_aula = self._crear_tile("AULA")
-        tile_asiento, self.lbl_ficha_asiento = self._crear_tile("ASIENTO", destacado=True)
-        tile_hora, self.lbl_ficha_hora = self._crear_tile("INGRESO")
+        tile_aula, self.lbl_ficha_aula = self._crear_tile_ficha("AULA", "tileAula")
+        tile_asiento, self.lbl_ficha_asiento = self._crear_tile_ficha("ASIENTO", "tileAsiento")
+        tile_hora, self.lbl_ficha_hora = self._crear_tile_ficha("INGRESO")
         tiles.addWidget(tile_aula, 1)
         tiles.addWidget(tile_asiento, 1)
         tiles.addWidget(tile_hora, 1)

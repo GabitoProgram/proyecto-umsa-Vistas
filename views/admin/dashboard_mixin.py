@@ -502,7 +502,9 @@ class DashboardMixin:
 
     def _cargar_resumen_dashboard(self):
         gestiones = self._obtener_lista("/admin/gestiones")
-        postulantes = self._obtener_lista("/postulantes?limit=1000")
+        # Conteo liviano: antes se traían 1000 postulantes como máximo y el
+        # número de "biometría pendiente" quedaba corto en gestiones grandes.
+        estadisticas = self._obtener_objeto("/postulantes/estadisticas") or {}
         examenes = self._obtener_lista("/admin/examenes")
         aulas = self._obtener_lista("/admin/aulas")
         carreras = self._obtener_lista("/admin/carreras")
@@ -510,7 +512,8 @@ class DashboardMixin:
         hoy = date.today().isoformat()
         gestion_activa = next((g.get("nombre") for g in gestiones if g.get("estado") == "ACTIVO"), "Sin gestión")
         pendientes = sum(
-            1 for p in postulantes if str(p.get("estado_biometria", "")).upper() != "COMPLETO"
+            int(total) for estado, total in estadisticas.items()
+            if str(estado).upper() != "COMPLETO"
         )
         examenes_hoy = sum(1 for examen in examenes if examen.get("fecha") == hoy)
         aulas_disponibles = sum(1 for aula in aulas if aula.get("activa", True))

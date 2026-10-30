@@ -1,6 +1,6 @@
 import os
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -231,6 +231,9 @@ class MainDashboardWindow(
         self.token_data = token_data or {}
         self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.rol = self.token_data.get("rol", "ADMIN")
+        # La X de esta ventana NO cierra la aplicación: pide cerrar sesión.
+        # AppController llama a cerrar_para_sesion() para permitir el cierre.
+        self._cierre_autorizado = False
         self.setWindowTitle(self.TITULO_VENTANA)
         self.setMinimumSize(1200, 750)
         self.init_ui()
@@ -457,3 +460,19 @@ class MainDashboardWindow(
         )
         if confirmacion == QMessageBox.Yes:
             self.cerrar_sesion.emit()
+
+    def cerrar_para_sesion(self):
+        """Cierre programático (logout): autoriza el closeEvent."""
+        self._cierre_autorizado = True
+        self.close()
+
+    def closeEvent(self, evento):
+        # La X del panel administrativo no debe cerrar toda la aplicación.
+        # Se interpreta como "cerrar sesión" y se vuelve a marcación/login.
+        if self._cierre_autorizado:
+            super().closeEvent(evento)
+            return
+        evento.ignore()
+        # Diferido: dejar que Qt termine este closeEvent antes de que el
+        # controlador vuelva a cerrar la ventana (evita un cierre anidado).
+        QTimer.singleShot(0, self.cerrar_sesion.emit)

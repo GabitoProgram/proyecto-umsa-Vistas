@@ -1,7 +1,10 @@
 import unicodedata
 
 import requests
-from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, QThreadPool, Qt, Signal
+from urllib.parse import quote
+from PySide6.QtCore import (
+    QObject, QPointF, QRectF, QRunnable, QThreadPool, Qt, QTimer, Signal,
+)
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -26,6 +29,10 @@ from desktop.views.dialogs.postulante_dialog import (
 
 # Formatos que admite la carga masiva.
 _EXTENSIONES_CARGA = (".xlsx", ".xls", ".csv")
+
+# Carnets que se dibujan por página. Con 5000 postulantes, crearlos todos
+# bloqueaba la interfaz varios segundos.
+PAGINA_CARNETS = 60
 
 
 def _archivo_carga(mime):
@@ -597,10 +604,18 @@ class PostulantesMixin:
             self._carnets_por_id = {}
             self._carnets_postulantes = []
             self._carnet_seleccionado = None
+            self._fotos_cache = {}
+            self._ultimo_filtro = None
+            self._limite_carnets = PAGINA_CARNETS
+            self._timer_filtro = QTimer(self)
+            self._timer_filtro.setSingleShot(True)
+            self._timer_filtro.setInterval(250)
+            self._timer_filtro.timeout.connect(self._aplicar_filtro_carnets)
 
     def _foto_recibida(self, generacion, id_postulante, datos):
         if generacion != self._generacion_fotos:
             return
+        self._fotos_cache[id_postulante] = datos
         carnet = self._carnets_por_id.get(id_postulante)
         if carnet is not None and isValid(carnet):
             carnet.poner_foto(datos)
@@ -608,47 +623,123 @@ class PostulantesMixin:
     # -- Lista de postulantes ---------------------------------------------
     def abrir_postulantes_gestion(self):
         self._asegurar_emisor_fotos()
-        datos = self._obtener_lista(f"/inscripciones/gestion/{self.gestion_nav_id}/postulantes")
-        todos = {str(p.get("ci")): p for p in self._obtener_lista("/postulantes?limit=1000")}
+        # El backend ya devuelve los datos biométricos en esta lista; antes se
+        # pedían aparte con ?limit=1000 (tope que dejaba fuera a postulantes).
+        datos = self._obtener_lista(
+            f"/inscripciones/gestion/{self.gestion_nav_id}/postulantes",
+            timeout=15,
+        )
 
         self.postulantes_nav_title.setText("Postulantes inscritos en la gestión")
 
         self._generacion_fotos += 1
-        generacion = self._generacion_fotos
         self._carnet_seleccionado = None
         self._carnets_por_id = {}
         self._carnets_postulantes = []
+        self._fotos_cache = {}
+        self._ultimo_filtro = None
+        self._limite_carnets = PAGINA_CARNETS
 
         for postulante in datos:
-            ci = str(postulante.get("ci", ""))
-            full_p = todos.get(ci, {})
-            # Actualizamos el postulante con su info completa (importante para editar y registrar)
-            postulante.update(full_p)
-
-            carnet = self._crear_carnet(postulante, full_p)
             busqueda = _normalizar(" ".join(
                 str(postulante.get(campo, ""))
                 for campo in ("ci", "nombre_completo", "nombres", "apellidos")
             ))
-            self._carnets_postulantes.append((carnet, postulante, busqueda))
+            self._carnets_postulantes.append((postulante, busqueda))
 
-            id_postulante = postulante.get("id_postulante")
-            tiene_rostro = full_p.get("tiene_rostro", False)
-            rostro_registrado = full_p.get("rostro_registrado", full_p.get("tiene_rostro", True))
-            if id_postulante:
-                self._carnets_por_id[id_postulante] = carnet
-                if tiene_rostro or rostro_registrado:
-                    self._pool_fotos.start(_TareaFoto(
-                        self._emisor_fotos,
-                        generacion,
-                        id_postulante,
-                        f"{self.api_base_url}/rostros/{id_postulante}/imagen",
-                        self._auth_headers(),
-                    ))
-
-        self.carnets_nav.establecer([c for c, _, _ in self._carnets_postulantes])
         self._aplicar_filtro_carnets()
         self.academico_stack.setCurrentIndex(3)
+
+    def _renderizar_carnets(self, registros):
+        self._carnet_seleccionado = None
+        self._carnets_por_id = {}
+        widgets = []
+        for postulante, _ in registros:
+            carnet = self._crear_carnet(postulante, postulante)
+            widgets.append(carnet)
+            id_postulante = postulante.get("id_postulante")
+            if not id_postulante:
+                continue
+            self._carnets_por_id[id_postulante] = carnet
+            foto = self._fotos_cache.get(id_postulante)
+            if foto:
+                carnet.poner_foto(foto)
+            elif (postulante.get("tiene_rostro")
+                  or postulante.get("rostro_registrado")):
+                self._pool_fotos.start(_TareaFoto(
+                    self._emisor_fotos,
+                    self._generacion_fotos,
+                    id_postulante,
+                    f"{self.api_base_url}/rostros/{id_postulante}/imagen",
+                    self._auth_headers(),
+                ))
+        self.carnets_nav.establecer(widgets)
+        return widgets
+
+    # -- Habilitación masiva de rostros -----------------------------------
+    def habilitar_todos_los_rostros_gestion(self):
+        """Habilita el rostro registrado de todos los postulantes de la gestión."""
+        self._cambiar_rostros_gestion(True)
+
+    def deshabilitar_todos_los_rostros_gestion(self):
+        """Deshabilita el rostro de todos los postulantes de la gestión."""
+        self._cambiar_rostros_gestion(False)
+
+    def _cambiar_rostros_gestion(self, habilitada):
+        gestion = getattr(self, "gestion_nav_id", None)
+        if not gestion:
+            QMessageBox.warning(
+                self, "Rostros", "Abra primero una gestión para cambiar sus rostros."
+            )
+            return
+
+        accion = "habilitar" if habilitada else "deshabilitar"
+        confirmacion = QMessageBox.question(
+            self,
+            f"{accion.capitalize()} rostros",
+            (
+                f"¿Desea {accion} el rostro de todos los postulantes inscritos en "
+                "esta gestión?\n\n"
+                "Solo se aplicará a quienes tengan un rostro registrado."
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirmacion != QMessageBox.Yes:
+            return
+
+        try:
+            respuesta = requests.patch(
+                f"{self.api_base_url}/rostros/habilitadas",
+                json={"habilitada": habilitada, "id_gestion": gestion},
+                headers=self._auth_headers(),
+                timeout=60,
+            )
+            if respuesta.status_code != 200:
+                try:
+                    detalle = respuesta.json().get(
+                        "detail", "No se pudieron actualizar los rostros."
+                    )
+                except ValueError:
+                    detalle = respuesta.text or "No se pudieron actualizar los rostros."
+                QMessageBox.warning(self, "Rostros", str(detalle))
+                return
+
+            datos = respuesta.json()
+            self.abrir_postulantes_gestion()
+            estado = "habilitados" if habilitada else "deshabilitados"
+            QMessageBox.information(
+                self,
+                "Rostros",
+                (
+                    f"Se {estado} {datos.get('cambiados', 0)} rostro(s).\n"
+                    f"Postulantes con rostro registrado: {datos.get('con_rostro', 0)}."
+                ),
+            )
+        except (requests.RequestException, ValueError) as error:
+            QMessageBox.critical(
+                self, "Error de red", f"No se pudo contactar al servidor: {error}"
+            )
 
     def _crear_carnet(self, postulante, full_p):
         tiene_rostro = full_p.get("tiene_rostro", False)
@@ -744,31 +835,61 @@ class PostulantesMixin:
         carnet.set_seleccionado(True)
 
     def _filtrar_carnets_postulantes(self, _texto=""):
-        self._aplicar_filtro_carnets()
+        # Se espera a que el usuario deje de escribir: redibujar en cada tecla
+        # con miles de postulantes se sentía lento.
+        timer = getattr(self, "_timer_filtro", None)
+        if timer is None:
+            self._aplicar_filtro_carnets()
+        else:
+            timer.start()
 
     def _aplicar_filtro_carnets(self):
         caja = getattr(self, "buscar_postulantes_gestion", None)
         texto = _normalizar(caja.text().strip()) if caja is not None else ""
         total = len(self._carnets_postulantes)
-        visibles = [
-            carnet for carnet, _, busqueda in self._carnets_postulantes
-            if not texto or texto in busqueda
+        if texto != getattr(self, "_ultimo_filtro", None):
+            # Cada búsqueda nueva vuelve a la primera página.
+            self._ultimo_filtro = texto
+            self._limite_carnets = PAGINA_CARNETS
+
+        filtrados = [
+            registro for registro in self._carnets_postulantes
+            if not texto or texto in registro[1]
         ]
+        limite = min(getattr(self, "_limite_carnets", PAGINA_CARNETS), len(filtrados))
+        pagina = filtrados[:limite]
+        # _renderizar_carnets devuelve los widgets ya creados; antes se pasaba
+        # la lista de diccionarios y Qt fallaba con "unhashable type: 'dict'".
+        widgets = self._renderizar_carnets(pagina)
 
         if total == 0:
             mensaje = ("Aún no hay postulantes inscritos en esta gestión.\n"
                        "Usa «Nuevo postulante» o importa un archivo de Excel.")
         else:
             mensaje = "Ningún postulante coincide con la búsqueda."
-        self.carnets_nav.mostrar(visibles, mensaje)
+        self.carnets_nav.mostrar(widgets, mensaje)
+
+        boton_mas = getattr(self, "btn_mostrar_mas_carnets", None)
+        if boton_mas is not None:
+            restantes = len(filtrados) - limite
+            boton_mas.setVisible(restantes > 0)
+            boton_mas.setText(f"Mostrar más ({restantes} restantes)")
 
         contador = getattr(self, "postulantes_nav_contador", None)
         if contador is not None:
             palabra = "postulante" if total == 1 else "postulantes"
             if texto:
-                contador.setText(f"{len(visibles)} de {total} {palabra}")
+                contador.setText(f"{len(filtrados)} de {total} {palabra}")
+            elif limite < len(filtrados):
+                contador.setText(f"Mostrando {limite} de {len(filtrados)} {palabra}")
             else:
-                contador.setText(f"{total} {palabra}")
+                contador.setText(f"{len(filtrados)} {palabra}")
+
+    def _mostrar_mas_carnets(self):
+        self._limite_carnets = (
+            getattr(self, "_limite_carnets", PAGINA_CARNETS) + PAGINA_CARNETS
+        )
+        self._aplicar_filtro_carnets()
 
     # -- Carreras e inscripción -------------------------------------------
     def seleccionar_carrera_gestion(self):
@@ -978,14 +1099,29 @@ class PostulantesMixin:
         # Asegurarse de tener el id_postulante y los nombres/apellidos separados
         id_post = postulante.get("id_postulante")
         if not id_post:
-            # Buscar en caso de que venga de la lista de inscripciones
+            # Buscar en caso de que venga de la lista de inscripciones.
             ci = postulante.get("ci")
-            full_postulante = next((item for item in self._obtener_lista("/postulantes?limit=1000") if str(item.get("ci")) == str(ci)), None)
+            full_postulante = (
+                self._obtener_objeto(f"/postulantes/buscar?ci={quote(str(ci))}")
+                if ci else None
+            )
             if not full_postulante:
                 QMessageBox.warning(self, "Postulantes", "No se encontraron los detalles completos del postulante.")
                 return
             postulante = full_postulante
             id_post = postulante.get("id_postulante")
+
+        # Si la lista no trae los datos de contacto (backend anterior), se pide
+        # la ficha completa; si no, el formulario los mostraría vacíos.
+        if postulante.get("ci") and not any(
+            campo in postulante for campo in ("telefono", "correo", "direccion")
+        ):
+            completo = self._obtener_objeto(
+                f"/postulantes/buscar?ci={quote(str(postulante.get('ci')))}"
+            )
+            if completo:
+                postulante = {**postulante, **completo}
+                id_post = postulante.get("id_postulante") or id_post
 
         carreras_disponibles = []
         carreras_seleccionadas = []

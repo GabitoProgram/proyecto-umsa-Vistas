@@ -130,6 +130,11 @@ def _leer_cadena(dispositivo, indice):
 
 def _verificar_acceso(dispositivo):
     """Comprueba si podemos configurar el dispositivo (permisos udev)."""
+    # En Windows el driver oficial de ZKTeco no deja reclamar la interfaz con
+    # PyUSB. Hacerlo en cada detección era lento y ensuciaba el bus; la SDK
+    # confirmará el acceso al abrir el dispositivo.
+    if os.name == "nt":
+        return True
     try:
         import usb.util
 

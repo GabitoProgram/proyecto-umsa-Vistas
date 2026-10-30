@@ -44,13 +44,21 @@ log = logging.getLogger(__name__)
 TIEMPO_MOSTRAR_RESULTADO_MS = 30000
 TIEMPO_REINICIO_LECTOR_MS = 900
 
-# Diámetro de la foto del postulante en la tarjeta de resultado.
-TAMANO_FOTO_RESULTADO = 220
+# Lado de la foto cuadrada del postulante en la tarjeta de resultado.
+# Si la pantalla es pequeña, bájalo a 200 o 210.
+TAMANO_FOTO_RESULTADO = 240
+# Esquinas redondeadas de la foto (0 = cuadrado puro).
+RADIO_FOTO = 20
+
+# Tamaño de la zona central (panel de espera y tarjeta de resultado).
+# Deben ser iguales para que la pantalla no «salte» al alternar.
+CENTRO_MIN = (760, 640)
+CENTRO_MAX = (980, 780)
 
 
 # ── Ajustes de rendimiento ──
 ANIMAR_ESPERA = True          # False = huella estática (menos CPU en equipos lentos)
-EDAD_MAX_ESTADO_LECTOR_S = 20    # cada cuánto se vuelve a escanear el bus USB
+EDAD_MAX_ESTADO_LECTOR_S = 60    # cada cuánto se vuelve a escanear el bus USB
 UMBRAL_OPERACION_LENTA_S = 0.15  # avisa en consola si algo tarda más que esto
 UMBRAL_BLOQUEO_UI_MS = 400       # avisa si la ventana se congela más que esto
 
@@ -65,6 +73,12 @@ _COLORES_AVATAR = (
     ("#E0F2FE", "#075985"),
 )
 _COLOR_TONO = {"exito": "#16A34A", "error": "#DC2626", "aviso": "#D97706"}
+
+# Variantes de «tile»: objectName del marco -> (etiqueta, valor)
+_TILES_CLAROS = {
+    "tileAula": ("tileEtiquetaClaro", "tileValorAula"),
+    "tileAsiento": ("tileEtiquetaClaro", "tileValorAsiento"),
+}
 
 
 
@@ -148,25 +162,26 @@ def _pixmap_resultado(tono, lado=64):
     return pm
 
 
-def _pixmap_circular(imagen, lado):
-    """Recorta la foto al centro y la deja circular, del tamaño del avatar."""
+def _pixmap_cuadrado(imagen, lado, radio=RADIO_FOTO):
+    """Recorta la foto a un cuadrado con esquinas suaves."""
     escalada = QPixmap.fromImage(imagen).scaled(
         lado, lado, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
     )
     x = max(0, (escalada.width() - lado) // 2)
-    y = max(0, (escalada.height() - lado) // 2)
+    # Se recorta un poco más arriba del centro para no cortar la cara.
+    y = max(0, int((escalada.height() - lado) * 0.25))
     recorte = escalada.copy(x, y, lado, lado)
 
-    circular = QPixmap(lado, lado)
-    circular.fill(Qt.transparent)
-    pintor = QPainter(circular)
+    salida = QPixmap(lado, lado)
+    salida.fill(Qt.transparent)
+    pintor = QPainter(salida)
     pintor.setRenderHint(QPainter.Antialiasing)
     ruta = QPainterPath()
-    ruta.addEllipse(QRectF(0, 0, lado, lado))
+    ruta.addRoundedRect(QRectF(0, 0, lado, lado), radio, radio)
     pintor.setClipPath(ruta)
     pintor.drawPixmap(0, 0, recorte)
     pintor.end()
-    return circular
+    return salida
 
 
 
@@ -367,6 +382,12 @@ ESTILOS_MARCACION = """
         border-radius: 11px; padding: 4px 12px;
         font-size: 13px; font-weight: 700;
     }
+    /* CI grande y oscuro para que se lea de lejos */
+    QLabel#resCi {
+        background: #0F2C59; color: #FFFFFF;
+        border-radius: 14px; padding: 6px 20px;
+        font-size: 24px; font-weight: 800;
+    }
     QLabel#resDetalle { color: #334155; font-size: 20px; }
     QLabel#resPie     { color: #0F172A; font-size: 22px; font-weight: 700; }
 
@@ -376,9 +397,15 @@ ESTILOS_MARCACION = """
     QFrame#tileDestacado {
         background: #E8F0FD; border: 1px solid #BFD3F7; border-radius: 14px;
     }
-    QLabel#tileEtiqueta { color: #64748B; }
-    QLabel#tileValor    { color: #0F172A; font-size: 26px; font-weight: 800; }
     QLabel#tileValorGrande { color: #1E54B7; font-size: 40px; font-weight: 800; }
+    /* Aula en naranja y asiento en azul fuerte, ambos con texto blanco */
+    QFrame#tileAula    { background: #EA580C; border: none; border-radius: 14px; }
+    QFrame#tileAsiento { background: #1E54B7; border: none; border-radius: 14px; }
+    QLabel#tileEtiqueta      { color: #64748B; }
+    QLabel#tileEtiquetaClaro { color: rgba(255, 255, 255, 0.85); }
+    QLabel#tileValor         { color: #0F172A; font-size: 26px; font-weight: 800; }
+    QLabel#tileValorAula     { color: #FFFFFF; font-size: 34px; font-weight: 800; }
+    QLabel#tileValorAsiento  { color: #FFFFFF; font-size: 52px; font-weight: 800; }
 
     QFrame#motivo {
         background: #FEF2F2; border: 1px solid #FECACA; border-radius: 14px;
@@ -434,6 +461,8 @@ class MarcacionMixin:
         if getattr(self, "_estacion_activa", False):
             return
         self._estacion_activa = True
+        self._lector_pausado = False
+        self._pausa_por_pestana = False
         self.btn_huella.setVisible(False)
         self.counter_timer.start(5000)
         # Se difiere para que la pantalla se pinte antes de consultar al servidor.
@@ -446,6 +475,8 @@ class MarcacionMixin:
     def detener_estacion(self):
         """Sale de la pantalla de registro: corta todo lo que esté corriendo."""
         self._estacion_activa = False
+        self._lector_pausado = True
+        self._pausa_por_pestana = False
         self._arrancando_identificacion = False
         self._inicio_lector_timer.stop()
         self.counter_timer.stop()
@@ -468,6 +499,10 @@ class MarcacionMixin:
         prueba las huellas habilitadas del examen y devuelve quién es.
         """
         if not getattr(self, "_estacion_activa", False):
+            return
+        # «Detener lector» y las pestañas deben ganarle a los reintentos
+        # programados con singleShot.
+        if getattr(self, "_lector_pausado", False):
             return
         if self._identificacion and self._identificacion.activo:
             return
@@ -511,7 +546,12 @@ class MarcacionMixin:
     def _guardar_huellas_examen_cache(self, datos):
         self._huellas_examen_cache = datos
 
-    def cancelar_identificacion(self):
+    def cancelar_identificacion(self, silencioso=False):
+        # Al pausar, los singleShot pendientes (reintentos cada 2 s) no deben
+        # reactivar el lector. Antes «Detener lector» se deshacía solo.
+        self._lector_pausado = True
+        if not silencioso:
+            self._pausa_por_pestana = False
         estaba_activa = bool(
             (self._identificacion and self._identificacion.activo)
             or getattr(self, "_arrancando_identificacion", False)
@@ -526,6 +566,14 @@ class MarcacionMixin:
             # Permite volver a activar el lector sin salir de la pantalla.
             self.btn_huella.setText("Reanudar lector")
             self.btn_huella.setVisible(True)
+
+    def reanudar_identificacion(self):
+        """Vuelve a activar el lector tras «Detener lector» o cambiar de pestaña."""
+        if not getattr(self, "_estacion_activa", False):
+            return
+        self._lector_pausado = False
+        self._pausa_por_pestana = False
+        self.identificar_huella()
 
     # ══════════════════════ CALLBACKS ══════════════════════
     def _estado_identificacion(self, mensaje):
@@ -589,15 +637,15 @@ class MarcacionMixin:
 
         self.lbl_res_titulo.setText(titulo)
         self.lbl_res_subtitulo.setText(subtitulo)
+        self.lbl_res_nombre.setText(nombre)
 
-        # Identidad
+        # Identidad (foto cuadrada; las iniciales quedan de respaldo)
         indice = sum(ord(c) for c in str(ci or nombre)) % len(_COLORES_AVATAR)
         fondo, texto = _COLORES_AVATAR[indice]
-        radio = TAMANO_FOTO_RESULTADO // 2
         self.lbl_res_avatar.setPixmap(QPixmap())
         self.lbl_res_avatar.setText(_iniciales(nombre))
         self.lbl_res_avatar.setStyleSheet(
-            f"background: {fondo}; color: {texto}; border-radius: {radio}px;"
+            f"background: {fondo}; color: {texto}; border-radius: {RADIO_FOTO}px;"
             f"font-size: {int(TAMANO_FOTO_RESULTADO * 0.34)}px; font-weight: 800;"
         )
         self._cargar_foto_postulante(data.get("id_postulante") or candidato.get("id_postulante"))
@@ -671,7 +719,7 @@ class MarcacionMixin:
         self.lbl_res_avatar.setStyleSheet("background: transparent; border: none;")
         self.lbl_res_avatar.setText("")
         self.lbl_res_avatar.setAlignment(Qt.AlignCenter)
-        self.lbl_res_avatar.setPixmap(_pixmap_circular(imagen, TAMANO_FOTO_RESULTADO))
+        self.lbl_res_avatar.setPixmap(_pixmap_cuadrado(imagen, TAMANO_FOTO_RESULTADO))
 
     def mostrar_resultado(self, exito: bool, titulo: str, detalle: str, asiento: str,
                           tono: str = None):
@@ -710,6 +758,7 @@ class MarcacionMixin:
         self.lbl_res_subtitulo.setText("")
         self.lbl_res_detalle.setText("")
         self.lbl_res_pie.setText("")
+        self.lbl_res_nombre.setText("")
         self.lbl_res_asiento.setText("")
         self.lbl_res_avatar.setPixmap(QPixmap())
         self.lbl_res_avatar.setText("?")
@@ -739,7 +788,10 @@ class MarcacionMixin:
         max_edad = EDAD_MAX_ESTADO_LECTOR_S if max_edad_s is None else max_edad_s
         ahora = time.monotonic()
         cache = getattr(self, "_estado_lector_cache", None)
-        if cache is not None and ahora - cache[0] < max_edad:
+        # Con el lector abierto no hace falta reescanear el bus USB: hacerlo
+        # en cada identificación bloqueaba la interfaz.
+        lector_en_uso = getattr(self, "_lector_abierto", None) is not None
+        if cache is not None and (lector_en_uso or ahora - cache[0] < max_edad):
             estado = cache[1]
         else:
             with _medir("detectar lectores USB"):
@@ -806,17 +858,35 @@ class MarcacionMixin:
             )
 
     # ══════════════════════ INTERFAZ ══════════════════════
-    def _crear_tile(self, etiqueta, destacado=False):
+    def _crear_tile(self, etiqueta, variante="tile", destacado=False, centrado=False):
+        """Casilla de dato.
+
+        ``variante``: tile, tileAula o tileAsiento (tarjeta de huella).
+        ``destacado=True`` conserva el aspecto original que usa la pestaña
+        de reconocimiento facial (``_crear_ficha``), que comparte este método.
+        """
+        if destacado:
+            variante = "tileDestacado"
         marco = QFrame()
-        marco.setObjectName("tileDestacado" if destacado else "tile")
+        marco.setObjectName(variante)
         lay = QVBoxLayout(marco)
         lay.setContentsMargins(18, 12, 18, 12)
         lay.setSpacing(2)
+        nuevo = centrado or variante in _TILES_CLAROS
+        if destacado:
+            nombre_etiqueta, nombre_valor = "tileEtiqueta", "tileValorGrande"
+        else:
+            nombre_etiqueta, nombre_valor = _TILES_CLAROS.get(
+                variante, ("tileEtiqueta", "tileValor"))
         lbl_etiqueta = QLabel(etiqueta)
-        lbl_etiqueta.setObjectName("tileEtiqueta")
+        lbl_etiqueta.setObjectName(nombre_etiqueta)
         lbl_etiqueta.setFont(_fuente_etiqueta(11, 1.6))
         valor = QLabel("—")
-        valor.setObjectName("tileValorGrande" if destacado else "tileValor")
+        valor.setObjectName(nombre_valor)
+        if nuevo:
+            # Solo los tiles nuevos van centrados; los demás quedan como antes.
+            lbl_etiqueta.setAlignment(Qt.AlignCenter)
+            valor.setAlignment(Qt.AlignCenter)
         lay.addWidget(lbl_etiqueta)
         lay.addWidget(valor)
         return marco, valor
@@ -824,8 +894,8 @@ class MarcacionMixin:
     def _crear_tarjeta_resultado(self):
         tarjeta = QFrame()
         tarjeta.setObjectName("resultCard")
-        tarjeta.setMinimumSize(760, 520)
-        tarjeta.setMaximumSize(980, 720)
+        tarjeta.setMinimumSize(*CENTRO_MIN)
+        tarjeta.setMaximumSize(*CENTRO_MAX)
         raiz = QVBoxLayout(tarjeta)
         raiz.setContentsMargins(0, 0, 0, 0)
         raiz.setSpacing(0)
@@ -881,52 +951,53 @@ class MarcacionMixin:
         lay_simple.addStretch()
         self.pila_cuerpo.addWidget(simple)
 
-        # Página 1: datos del postulante
+        # Página 1: datos del postulante (todo centrado)
         acceso = QWidget()
         lay_acceso = QVBoxLayout(acceso)
-        lay_acceso.setContentsMargins(34, 26, 34, 18)
-        lay_acceso.setSpacing(20)
+        lay_acceso.setContentsMargins(34, 20, 34, 14)
+        lay_acceso.setSpacing(12)
 
-        identidad = QHBoxLayout()
-        identidad.setSpacing(24)
+        # Foto cuadrada al centro
         self.lbl_res_avatar = QLabel("?")
         self.lbl_res_avatar.setFixedSize(TAMANO_FOTO_RESULTADO, TAMANO_FOTO_RESULTADO)
         self.lbl_res_avatar.setAlignment(Qt.AlignCenter)
-        identidad.addWidget(self.lbl_res_avatar, 0, Qt.AlignTop)
+        lay_acceso.addStretch(1)
+        lay_acceso.addWidget(self.lbl_res_avatar, 0, Qt.AlignHCenter)
 
-        datos = QVBoxLayout()
-        datos.setSpacing(8)
+        # Nombre
         self.lbl_res_nombre = QLabel("")
         self.lbl_res_nombre.setObjectName("resNombre")
+        self.lbl_res_nombre.setAlignment(Qt.AlignCenter)
         self.lbl_res_nombre.setWordWrap(True)
-        datos.addWidget(self.lbl_res_nombre)
+        lay_acceso.addWidget(self.lbl_res_nombre)
 
+        # CI (grande) y carrera
         fila_chips = QHBoxLayout()
-        fila_chips.setSpacing(8)
+        fila_chips.setSpacing(10)
         self.lbl_res_ci = QLabel("")
-        self.lbl_res_ci.setObjectName("resChip")
+        self.lbl_res_ci.setObjectName("resCi")
         self.lbl_res_carrera = QLabel("")
         self.lbl_res_carrera.setObjectName("resChip")
+        fila_chips.addStretch()
         fila_chips.addWidget(self.lbl_res_ci)
         fila_chips.addWidget(self.lbl_res_carrera)
         fila_chips.addStretch()
-        datos.addLayout(fila_chips)
+        lay_acceso.addLayout(fila_chips)
 
         self.lbl_res_materia = QLabel("")
         self.lbl_res_materia.setObjectName("resMateria")
+        self.lbl_res_materia.setAlignment(Qt.AlignCenter)
         self.lbl_res_materia.setWordWrap(True)
-        datos.addWidget(self.lbl_res_materia)
-        identidad.addLayout(datos, 1)
-        lay_acceso.addStretch(1)
-        lay_acceso.addLayout(identidad)
+        lay_acceso.addWidget(self.lbl_res_materia)
 
+        # Aula (naranja), asiento (azul) e ingreso
         self.bloque_tiles = QWidget()
         tiles = QHBoxLayout(self.bloque_tiles)
         tiles.setContentsMargins(0, 0, 0, 0)
         tiles.setSpacing(14)
-        tile_aula, self.lbl_res_aula = self._crear_tile("AULA")
-        tile_asiento, self.lbl_res_asiento = self._crear_tile("ASIENTO", destacado=True)
-        tile_hora, self.lbl_res_hora = self._crear_tile("INGRESO")
+        tile_aula, self.lbl_res_aula = self._crear_tile("AULA", "tileAula")
+        tile_asiento, self.lbl_res_asiento = self._crear_tile("ASIENTO", "tileAsiento")
+        tile_hora, self.lbl_res_hora = self._crear_tile("INGRESO", centrado=True)
         tiles.addWidget(tile_aula, 1)
         tiles.addWidget(tile_asiento, 1)
         tiles.addWidget(tile_hora, 1)
@@ -993,8 +1064,8 @@ class MarcacionMixin:
         centro = QHBoxLayout()
         centro.setSpacing(0)
         self.panel_espera = PanelEspera()
-        self.panel_espera.setMinimumSize(760, 520)
-        self.panel_espera.setMaximumSize(980, 720)
+        self.panel_espera.setMinimumSize(*CENTRO_MIN)
+        self.panel_espera.setMaximumSize(*CENTRO_MAX)
         self.tarjeta_resultado = self._crear_tarjeta_resultado()
         self.tarjeta_resultado.setVisible(False)
         centro.addStretch(1)
@@ -1039,11 +1110,13 @@ class MarcacionMixin:
             "y registra su ingreso. No necesitas buscar tu nombre."
         )
         self.btn_huella.setVisible(False)
-        self.btn_huella.clicked.connect(self.identificar_huella)
+        self.btn_huella.clicked.connect(self.reanudar_identificacion)
         fila.addWidget(self.btn_huella)
 
         layout_marc.addWidget(barra)
         # Se difiere: escanear el USB al construir la ventana la haría abrir más lento.
         QTimer.singleShot(300, self.actualizar_estado_lector)
 
+        # Se guarda para poder pausar el lector al cambiar de pestaña.
+        self.tab_marcacion = tab_marcacion
         self.tabs.addTab(tab_marcacion, "Marcación Biométrica")

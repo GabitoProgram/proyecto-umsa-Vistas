@@ -422,6 +422,26 @@ class AcademicoMixin:
         self._estilizar_boton(btn_importar_postulantes, "exito", "subir")
         btn_importar_postulantes.clicked.connect(self.importar_postulantes_gestion)
         btn_importar_postulantes.archivo_recibido.connect(self.importar_excel_desde_archivo)
+
+        self.btn_habilitar_rostros_gestion = self._crear_boton_nav(
+            "Habilitar rostros", "exito", "persona"
+        )
+        self.btn_habilitar_rostros_gestion.setToolTip(
+            "Habilita el rostro registrado de todos los postulantes de esta gestión."
+        )
+        self.btn_habilitar_rostros_gestion.clicked.connect(
+            self.habilitar_todos_los_rostros_gestion
+        )
+
+        self.btn_deshabilitar_rostros_gestion = self._crear_boton_nav(
+            "Deshabilitar rostros", "secundario", "persona"
+        )
+        self.btn_deshabilitar_rostros_gestion.setToolTip(
+            "Deshabilita el rostro de todos los postulantes de esta gestión."
+        )
+        self.btn_deshabilitar_rostros_gestion.clicked.connect(
+            self.deshabilitar_todos_los_rostros_gestion
+        )
         layout_postulantes.addLayout(self._crear_cabecera_pagina(
             "Académico  ›  Gestiones  ›  Carreras  ›  Postulantes",
             self.postulantes_nav_title,
@@ -451,7 +471,15 @@ class AcademicoMixin:
         )
         self.postulantes_nav_contador = QLabel("0 postulantes")
         self.postulantes_nav_contador.setObjectName("chip")
+        # La lista se dibuja por páginas: con 5000 postulantes no se pueden
+        # crear 5000 carnets de golpe (la ventana tardaba en abrir).
+        self.btn_mostrar_mas_carnets = self._crear_boton_nav("Mostrar más", "secundario")
+        self.btn_mostrar_mas_carnets.setVisible(False)
+        self.btn_mostrar_mas_carnets.clicked.connect(self._mostrar_mas_carnets)
         fila_filtro.addWidget(self.buscar_postulantes_gestion, 1)
+        fila_filtro.addWidget(self.btn_habilitar_rostros_gestion)
+        fila_filtro.addWidget(self.btn_deshabilitar_rostros_gestion)
+        fila_filtro.addWidget(self.btn_mostrar_mas_carnets)
         fila_filtro.addWidget(self.postulantes_nav_contador)
         layout_postulantes.addLayout(fila_filtro)
 

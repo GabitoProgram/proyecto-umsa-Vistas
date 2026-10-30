@@ -99,43 +99,49 @@ def ruta_sdk_zk() -> str:
     return zkfp_ctypes.buscar_libzkfp() or ""
 
 
-def crear_lector(tipo=None, indice=0):
+def crear_lector(tipo=None, indice=0, info=None):
     """Crea un lector de alto nivel listo para ``conectar()``.
 
     ``tipo`` puede ser ``"libfprint"``, ``"zk"`` o ``None``
     (elige el primero disponible, preferiendo libfprint porque
-    no requiere SDK propietaria).
+    no requiere SDK propietaria). Si se pasa ``info`` (un
+    ``LectorHuella`` ya detectado) se evita reescanear el bus USB.
     """
-    log.debug("crear_lector(): llamando a detectar_lectores()...")
-    lectores, usb_ok = detectar_lectores()
-    log.debug("crear_lector(): detectar_lectores() devolvió %d lectores, usb_ok=%s", len(lectores), usb_ok)
-    if not usb_ok:
-        raise LectorNoConectadoError(
-            "No se pudo acceder al bus USB (falta la regla udev).\n"
-            "Ejecuta:  sudo ./setup_lectores_huella.sh"
-        )
-    if not lectores:
-        raise LectorNoConectadoError(
-            "No se detectó ningún lector de huella.\n"
-            "Conecta el lector por USB."
-        )
-    if tipo:
-        candidatos = [l for l in lectores if l.tipo == tipo]
+    if info is not None:
+        elegido = info
     else:
-        candidatos = [l for l in lectores if l.tipo == "libfprint"]
+        log.debug("crear_lector(): llamando a detectar_lectores()...")
+        lectores, usb_ok = detectar_lectores()
+        log.debug("crear_lector(): detectar_lectores() devolvió %d lectores, usb_ok=%s", len(lectores), usb_ok)
+        if not usb_ok:
+            raise LectorNoConectadoError(
+                "No se pudo acceder al bus USB (falta la regla udev).\n"
+                "Ejecuta:  sudo ./setup_lectores_huella.sh"
+            )
+        if not lectores:
+            raise LectorNoConectadoError(
+                "No se detectó ningún lector de huella.\n"
+                "Conecta el lector por USB."
+            )
+        if tipo:
+            candidatos = [l for l in lectores if l.tipo == tipo]
+        else:
+            candidatos = [l for l in lectores if l.tipo == "libfprint"]
+            if not candidatos:
+                candidatos = [l for l in lectores if l.tipo == "zk"]
         if not candidatos:
-            candidatos = [l for l in lectores if l.tipo == "zk"]
-    if not candidatos:
-        raise LectorNoConectadoError(
-            f"No hay lectores de tipo «{tipo}» conectados."
-        )
-    elegido = candidatos[min(indice, len(candidatos) - 1)]
+            raise LectorNoConectadoError(
+                f"No hay lectores de tipo «{tipo}» conectados."
+            )
+        elegido = candidatos[min(indice, len(candidatos) - 1)]
     log.debug("crear_lector(): lector elegido=%s, creando LectorLibfprint...", elegido.modelo)
     if elegido.tipo == "libfprint":
         lector = libfprint_backend.LectorLibfprint(elegido.indice_sdk)
         log.debug("crear_lector(): LectorLibfprint creado OK")
         return lector
-    return LectorZK(elegido.indice_sdk)
+    # Se pasa lo ya detectado: conectar() no debe volver a escanear el bus USB
+    # (en Windows eso agrega segundos y puede chocar con el driver oficial).
+    return LectorZK(elegido.indice_sdk, info=elegido)
 
 
 class LectorZK:
@@ -145,13 +151,14 @@ class LectorZK:
     # Permite consultar «¿hay un dedo?» sin bloquear (ver capturar_plantilla_actual).
     soporta_sondeo = True
 
-    def __init__(self, indice=0):
-        self.indice = indice
+    def __init__(self, indice=0, info=None):
+        self.indice = getattr(info, "indice_sdk", indice) if info is not None else indice
+        self.info = info
         self.sdk = None
         self.conectado = False
         self.ancho = 256
         self.alto = 300
-        self.modelo = "Lector ZKTeco"
+        self.modelo = info.modelo if info is not None else "Lector ZKTeco"
 
     # ------------------------------------------------------------------
     def conectar(self):
@@ -161,13 +168,19 @@ class LectorZK:
                 "La ZKFinger SDK de ZKTeco no está instalada.\n"
                 "Ejecuta:  ./setup_lectores_huella.sh"
             )
-        lectores, usb_ok = detectar_lectores()
-        zk_lectores = [l for l in lectores if l.tipo == "zk"]
-        if not zk_lectores:
-            raise LectorNoConectadoError(
-                "No se detectó ningún lector ZKTeco.\n"
-                "Conecta el ZK4500 o ZK9500 por USB."
-            )
+        info = self.info
+        if info is None:
+            lectores, usb_ok = detectar_lectores()
+            zk_lectores = [l for l in lectores if l.tipo == "zk"]
+            if not zk_lectores:
+                raise LectorNoConectadoError(
+                    "No se detectó ningún lector ZKTeco.\n"
+                    "Conecta el ZK4500 o ZK9500 por USB."
+                )
+            info = zk_lectores[min(self.indice, len(zk_lectores) - 1)]
+        else:
+            # Ya viene detectado por crear_lector(): no reescanear el USB.
+            usb_ok = True
         if not usb_ok:
             raise LectorNoConectadoError(
                 "No se pudo acceder al bus USB (falta la regla udev).\n"
@@ -175,13 +188,13 @@ class LectorZK:
             )
         # En Windows el driver oficial ZKTeco impide que PyUSB reclame la
         # interfaz, pero la SDK ya confirmó el acceso al abrir el dispositivo.
-        if os.name != "nt" and not zk_lectores[self.indice].accesible:
+        if os.name != "nt" and not info.accesible:
             raise LectorNoConectadoError(
-                f"El lector {zk_lectores[self.indice].modelo} está "
+                f"El lector {info.modelo} está "
                 "conectado, pero este usuario no tiene permiso para "
                 "usarlo.\nEjecuta:  sudo ./setup_lectores_huella.sh"
             )
-        self.modelo = zk_lectores[self.indice].modelo
+        self.modelo = info.modelo
         self.sdk = zkfp_ctypes.ZKFingerSDK()
         self.sdk.inicializar()
         if self.sdk.cantidad_dispositivos() == 0:
@@ -272,6 +285,22 @@ class LectorZK:
         self._requerido()
         (_imagen, _w, _h), plantilla = self.capturar(timeout)
         return plantilla
+
+    def capturar_para_enrolar_no_bloqueante(self):
+        """Una sola consulta al lector, sin esperar dedo.
+
+        Devuelve ``(imagen, plantilla, ancho, alto)`` o ``None`` si todavía no
+        hay una huella apoyada. Permite enrolar con un QTimer sin congelar la
+        interfaz (el enrolamiento bloqueante tardaba segundos).
+        """
+        self._requerido()
+        try:
+            imagen, plantilla = self.sdk.capturar_plantilla(0)
+        except RuntimeError:
+            return None
+        if not plantilla:
+            return None
+        return imagen, plantilla, self.ancho, self.alto
 
     def comparar_captura_con_plantilla(self, captura, plantilla_guardada_cruda):
         """Compara una captura viva ya tomada sin volver a usar el lector."""

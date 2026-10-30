@@ -1,4 +1,4 @@
-import requests
+﻿import requests
 from PySide6.QtWidgets import QStackedWidget, QMainWindow, QMessageBox
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
@@ -52,12 +52,20 @@ class AppController(QMainWindow):
         self.checkin_view = CheckInView(self, api_base_url=self.api_base_url)
         self.login_view = LoginView(self, api_base_url=self.api_base_url)
         self.admin_window = None
+        # True solo cuando el usuario entró al login a propósito (Panel Admin o
+        # cerrar sesión). Evita que el sondeo lo devuelva a marcación.
+        self._login_manual_activo = False
+        # Si el operador deja el login abierto y sin escribir, se vuelve a
+        # marcación (evita que la estación quede atrapada en el login).
+        self.SEGUNDOS_LOGIN_MANUAL = 120
+        # Para no repetir el modal de clave inválida cada 30 segundos.
+        self._clave_invalida_avisada = False
 
         self.stack.addWidget(self.checkin_view)  # 0
         self.stack.addWidget(self.login_view)    # 1
 
         # Señales de navegación
-        self.checkin_view.solicitar_login.connect(self.mostrar_login)
+        self.checkin_view.solicitar_login.connect(self._abrir_login_manual)
         self.login_view.login_exitoso.connect(self.abrir_panel_administrativo)
 
         # Timer de sondeo de examen activo (cada 30s). La consulta al servidor
@@ -107,23 +115,40 @@ class AppController(QMainWindow):
             return  # el panel se abrió mientras llegaba la respuesta
 
         if status == 200:
+            self._clave_invalida_avisada = False
             activos = (datos or {}).get("activos", [])
             if activos:
+                # Si el operador abrió el login a propósito, no lo saques de
+                # ahí mientras esté escribiendo; si lo deja inactivo, vuelve.
+                if self._login_manual_activo and self.stack.currentWidget() is self.login_view:
+                    if self.login_view.hay_actividad():
+                        return
+                    if not self.login_view.inactivo_por(self.SEGUNDOS_LOGIN_MANUAL):
+                        return
                 self.mostrar_checkin(activos[0])
             else:
                 self.mostrar_login()
         elif status == 401:
-            QMessageBox.critical(
-                self,
-                "Clave Inválida",
-                "La clave configurada fue dada de baja o no es válida.",
-            )
+            # Avisar una sola vez: antes aparecía un modal cada 30 s.
+            if not self._clave_invalida_avisada:
+                self._clave_invalida_avisada = True
+                QMessageBox.critical(
+                    self,
+                    "Clave Inválida",
+                    "La clave configurada fue dada de baja o no es válida.",
+                )
             self.mostrar_login()
         elif status == 0:  # sin conexión con el servidor
             if self.stack.currentWidget() != self.checkin_view:
                 self.mostrar_login()
 
+    def _abrir_login_manual(self):
+        self._login_manual_activo = True
+        self.login_view.registrar_actividad()
+        self.mostrar_login()
+
     def mostrar_checkin(self, data_examen):
+        self._login_manual_activo = False
         self.checkin_view.set_examen(data_examen)
         self.stack.setCurrentWidget(self.checkin_view)
         self.checkin_view.iniciar_estacion()
@@ -148,6 +173,7 @@ class AppController(QMainWindow):
 
         self.check_timer.stop()  # el sondeo no hace falta con el panel abierto
         self.checkin_view.detener_estacion()
+        self._login_manual_activo = False
         self.admin_window.showMaximized()
         self.hide()
 
@@ -155,12 +181,19 @@ class AppController(QMainWindow):
         admin_window = self.admin_window
         self.admin_window = None
         if admin_window:
-            admin_window.close()
+            # cerrar_para_sesion autoriza el cierre; closeEvent no debe
+            # re-emitir cerrar_sesion (evita el bucle de señales).
+            if hasattr(admin_window, "cerrar_para_sesion"):
+                admin_window.cerrar_para_sesion()
+            else:
+                admin_window.close()
             admin_window.deleteLater()
 
         api.jwt_token = None
         api.current_user = None
+        self._login_manual_activo = True
         self.login_view.limpiar_formulario()
+        self.login_view.registrar_actividad()
         self.mostrar_login()
         self.check_timer.start(self.INTERVALO_SONDEO_MS)
         self.show()
