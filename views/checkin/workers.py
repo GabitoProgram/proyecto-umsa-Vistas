@@ -10,6 +10,7 @@ from desktop.biometria import (
     quitar_prefijo_plantilla,
     FormatoIncompatibleError,
 )
+from desktop.views.checkin import cache_plantillas
 
 log = logging.getLogger(__name__)
 
@@ -22,12 +23,39 @@ PRESUPUESTO_COMPARACION_MS = 15
 
 _ERROR_SIN_DEDO = "No se pudo capturar la huella"
 
+# Con 5000 postulantes y al menos 2 huellas por persona se necesitan 10000
+# plantillas. El servidor también acepta este límite ampliado.
+LIMITE_PLANTILLAS = 20000
+
 # Las peticiones al servidor salen por aquí, fuera del hilo de la interfaz.
 _pool_red = QThreadPool()
 _pool_red.setMaxThreadCount(2)
 
 
 # ══════════════════════ UTILIDADES DE SEGUNDO PLANO ══════════════════════
+def _preparar_plantillas(datos):
+    """Decodifica y clasifica las plantillas fuera del hilo de la interfaz.
+
+    Con miles de huellas, hacer este trabajo en la UI la congelaría varios
+    segundos. Se ejecuta en el mismo hilo de red y el resultado ya listo se
+    entrega al hilo principal.
+    """
+    candidatos = datos.get("candidatos") or []
+    plantillas = []
+    formatos = []
+    for candidato in candidatos:
+        cruda = base64.b64decode(candidato["plantilla_b64"])
+        formatos.append(detectar_formato_plantilla(cruda))
+        plantillas.append(quitar_prefijo_plantilla(cruda))
+    if formatos:
+        formato = max(set(formatos), key=formatos.count)
+        indices = [i for i, f in enumerate(formatos) if f == formato]
+    else:
+        formato = None
+        indices = []
+    return plantillas, indices, formato
+
+
 class _Entrega(QObject):
     """Recibe en el hilo principal el resultado de una tarea de red."""
 
@@ -154,19 +182,57 @@ class IdentificacionHuellaController:
         if not self._activo:
             return
         url = f"{self.vista.api_base_url}/marcaciones/plantillas-examen"
-        params = {"id_examen": self.id_examen} if self.id_examen else {}
+        url_version = f"{url}/version"
+        params = {"limite": LIMITE_PLANTILLAS}
+        if self.id_examen:
+            params["id_examen"] = self.id_examen
         headers = {"X-App-Key": self.app_key}
 
         def pedir():
-            respuesta = requests.get(url, params=params, headers=headers, timeout=15)
+            version = None
+            version_disponible = False
+            try:
+                respuesta_version = requests.get(
+                    url_version, params=params, headers=headers, timeout=10
+                )
+                version_disponible = True
+                if respuesta_version.status_code == 200:
+                    try:
+                        version = respuesta_version.json().get("version")
+                    except ValueError:
+                        version = None
+            except requests.RequestException:
+                pass
+
+            if version:
+                datos_cache = cache_plantillas.cargar(self.id_examen, version)
+                if datos_cache is not None:
+                    log.info("Huellas cargadas desde el caché local del examen")
+                    return datos_cache, _preparar_plantillas(datos_cache)
+            elif not version_disponible:
+                datos_cache = cache_plantillas.cargar(self.id_examen)
+                if datos_cache is not None:
+                    log.warning(
+                        "No se pudo consultar la versión de huellas; se usa el caché local"
+                    )
+                    return datos_cache, _preparar_plantillas(datos_cache)
+
+            respuesta = requests.get(url, params=params, headers=headers, timeout=30)
             if respuesta.status_code != 200:
                 raise RuntimeError(respuesta.text or "error del servidor")
-            return respuesta.json()
+            datos = respuesta.json()
+            version_respuesta = datos.get("version") or version
+            if version_respuesta:
+                try:
+                    cache_plantillas.guardar(self.id_examen, datos, version_respuesta)
+                except Exception:
+                    log.warning("No se pudo guardar el caché local de huellas", exc_info=True)
+            return datos, _preparar_plantillas(datos)
 
         self._pendiente_red = True
         self._entrega = _ejecutar_en_hilo(pedir, self._descarga_lista)
 
-    def _descarga_lista(self, datos, error):
+    def _descarga_lista(self, resultado, error):
         self._pendiente_red = False
         if self._cancelado or not self._activo:
             return
@@ -174,10 +240,11 @@ class IdentificacionHuellaController:
             log.error("Error descargando las huellas del examen: %s", error)
             self._fallar(f"No se pudieron descargar las huellas: {error}")
             return
+        datos, preparado = resultado
         self.vista._guardar_huellas_examen_cache(datos)
-        self._procesar_datos(datos)
+        self._procesar_datos(datos, preparado)
 
-    def _procesar_datos(self, datos):
+    def _procesar_datos(self, datos, preparado=None):
         if not self._activo:
             return
         self.candidatos = datos.get("candidatos") or []
@@ -196,22 +263,17 @@ class IdentificacionHuellaController:
 
         # Descodificar miles de plantillas es trabajo inútil si ya se hizo
         # para estos mismos datos: se reutiliza el resultado.
-        procesado = getattr(self.vista, "_plantillas_procesadas", None)
-        if procesado is not None and procesado[0] is datos:
-            _, self._plantillas, self._indices, self._formato = procesado
+        if preparado is not None:
+            self._plantillas, self._indices, self._formato = preparado
+            self.vista._plantillas_procesadas = (datos, *preparado)
         else:
-            # Descodifica una vez y deja fuera lo que no es de este lector:
-            # una estación usa un solo tipo de lector.
-            self._plantillas = []
-            formatos = []
-            for candidato in self.candidatos:
-                cruda = base64.b64decode(candidato["plantilla_b64"])
-                formatos.append(detectar_formato_plantilla(cruda))
-                self._plantillas.append(quitar_prefijo_plantilla(cruda))
-            self._formato = max(set(formatos), key=formatos.count)
-            self._indices = [i for i, f in enumerate(formatos) if f == self._formato]
-            self.vista._plantillas_procesadas = (
-                datos, self._plantillas, self._indices, self._formato)
+            procesado = getattr(self.vista, "_plantillas_procesadas", None)
+            if procesado is not None and procesado[0] is datos:
+                _, self._plantillas, self._indices, self._formato = procesado
+            else:
+                self._plantillas, self._indices, self._formato = _preparar_plantillas(datos)
+                self.vista._plantillas_procesadas = (
+                    datos, self._plantillas, self._indices, self._formato)
         self._posicion = 0
         self._captura_actual = None
 

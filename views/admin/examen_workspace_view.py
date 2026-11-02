@@ -1,13 +1,14 @@
 import requests
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QMessageBox,
-    QLineEdit, QSpinBox, QFileDialog, QInputDialog, QListWidget, QListWidgetItem,
+    QLineEdit, QFileDialog, QInputDialog, QListWidget, QListWidgetItem,
     QScrollArea, QSizePolicy, QDialog, QComboBox
 )
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
+    QBrush, QColor, QFont, QIcon, QIntValidator, QPainter, QPainterPath,
+    QPalette, QPen, QPixmap
 )
 from desktop.config.app_config import AppConfig
 
@@ -169,21 +170,32 @@ class DialogEditarAsignacion(QDialog):
         QPushButton#btnSecundario:hover { background: #F1F5F9; }
     """
 
-    def __init__(self, parent, postulante, aulas, api_base_url, headers):
+    def __init__(self, parent, postulante, aulas, api_base_url, headers,
+                 id_examen=None, id_asignacion=None):
         super().__init__(parent)
-        self.setWindowTitle("Editar aula y asiento")
-        self.setStyleSheet(self.ESTILOS_DLG)
-        self.setFixedSize(420, 310)
         self.postulante = postulante
         self.aulas = aulas
         self.api_base_url = api_base_url
         self.headers = headers
+        self.id_examen = id_examen
+        self.id_asignacion = id_asignacion or postulante.get("id_asignacion")
+        self._asientos_ocupados = set()
+        self._ocupados_cargados = False
+        editando = bool(self.id_asignacion)
+        self.setWindowTitle(
+            "Editar aula y asiento" if editando else "Asignar aula y asiento"
+        )
+        self.setStyleSheet(self.ESTILOS_DLG)
+        self.setFixedSize(430, 470)
+        self._aula_actual_id, self._piso_actual_id, self._bloque_actual_id = (
+            self._ubicacion_actual()
+        )
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(14)
 
-        lbl_t = QLabel("Editar aula y asiento")
+        lbl_t = QLabel(self.windowTitle())
         lbl_t.setObjectName("dlgTitulo")
         nombre = postulante.get("nombre_completo") or "Postulante"
         ci = postulante.get("ci") or ""
@@ -199,19 +211,30 @@ class DialogEditarAsignacion(QDialog):
         form.setContentsMargins(16, 14, 16, 16)
         form.setSpacing(10)
 
-        lbl_aula = QLabel("AULA ASIGNADA")
+        lbl_bloque = QLabel("BLOQUE")
+        lbl_bloque.setObjectName("lblCampo")
+        lbl_bloque.setFont(_fuente_etiqueta(10, 1.2))
+        self.combo_bloque = QComboBox()
+        self.combo_bloque.setObjectName("comboDlg")
+        self.combo_bloque.setMinimumHeight(38)
+        self._llenar_bloques()
+
+        lbl_piso = QLabel("PISO")
+        lbl_piso.setObjectName("lblCampo")
+        lbl_piso.setFont(_fuente_etiqueta(10, 1.2))
+        self.combo_piso = QComboBox()
+        self.combo_piso.setObjectName("comboDlg")
+        self.combo_piso.setMinimumHeight(38)
+
+        lbl_aula = QLabel("AULA")
         lbl_aula.setObjectName("lblCampo")
         lbl_aula.setFont(_fuente_etiqueta(10, 1.2))
         self.combo_aula = QComboBox()
         self.combo_aula.setObjectName("comboDlg")
         self.combo_aula.setMinimumHeight(38)
 
-        actual_aula = postulante.get("nombre_aula")
-        idx_inicial = 0
-        for i, a in enumerate(self.aulas):
-            self.combo_aula.addItem(str(a.get("nombre", "")), userData=a)
-            if a.get("nombre") == actual_aula:
-                idx_inicial = i
+        self._llenar_pisos()
+        self._llenar_aulas()
 
         lbl_asiento = QLabel("NÚMERO DE ASIENTO")
         lbl_asiento.setObjectName("lblCampo")
@@ -220,6 +243,12 @@ class DialogEditarAsignacion(QDialog):
         self.combo_asiento.setObjectName("comboDlg")
         self.combo_asiento.setMinimumHeight(38)
 
+        form.addWidget(lbl_bloque)
+        form.addWidget(self.combo_bloque)
+        form.addSpacing(2)
+        form.addWidget(lbl_piso)
+        form.addWidget(self.combo_piso)
+        form.addSpacing(2)
         form.addWidget(lbl_aula)
         form.addWidget(self.combo_aula)
         form.addSpacing(4)
@@ -235,7 +264,9 @@ class DialogEditarAsignacion(QDialog):
         btn_cancelar.setCursor(Qt.PointingHandCursor)
         btn_cancelar.clicked.connect(self.reject)
 
-        self.btn_guardar = QPushButton("Guardar cambios")
+        self.btn_guardar = QPushButton(
+            "Guardar cambios" if editando else "Asignar"
+        )
         self.btn_guardar.setObjectName("btnPrimario")
         self.btn_guardar.setMinimumHeight(38)
         self.btn_guardar.setCursor(Qt.PointingHandCursor)
@@ -245,11 +276,122 @@ class DialogEditarAsignacion(QDialog):
         botones.addWidget(self.btn_guardar)
         lay.addLayout(botones)
 
+        self._cargar_asientos_aula()
+        self.combo_bloque.currentIndexChanged.connect(self._al_cambiar_bloque)
+        self.combo_piso.currentIndexChanged.connect(self._al_cambiar_piso)
         self.combo_aula.currentIndexChanged.connect(self._cargar_asientos_aula)
-        self.combo_aula.setCurrentIndex(idx_inicial)
+
+    def _ubicacion_actual(self):
+        actual_aula = self.postulante.get("nombre_aula")
+        if not actual_aula:
+            return None, None, None
+        nombre_bloque = self.postulante.get("nombre_bloque")
+        nombre_piso = self.postulante.get("nombre_piso")
+        candidatas = [
+            a for a in self.aulas if a.get("nombre") == actual_aula
+        ]
+        for aula in candidatas:
+            if nombre_bloque and aula.get("bloque_nombre") != nombre_bloque:
+                continue
+            if nombre_piso and aula.get("piso_nombre") != nombre_piso:
+                continue
+            return (
+                aula.get("id_aula"), aula.get("id_piso"), aula.get("id_bloque")
+            )
+        if candidatas:
+            aula = candidatas[0]
+            return (
+                aula.get("id_aula"), aula.get("id_piso"), aula.get("id_bloque")
+            )
+        return None, None, None
+
+    def _llenar_bloques(self):
+        vistos = set()
+        for aula in self.aulas:
+            id_bloque = aula.get("id_bloque")
+            clave = id_bloque if id_bloque is not None else 0
+            if clave in vistos:
+                continue
+            vistos.add(clave)
+            etiqueta = aula.get("bloque_nombre") or "Sin bloque"
+            self.combo_bloque.addItem(etiqueta, userData=id_bloque)
+        indice = 0
+        for i in range(self.combo_bloque.count()):
+            if self.combo_bloque.itemData(i) == self._bloque_actual_id:
+                indice = i
+                break
+        self.combo_bloque.setCurrentIndex(indice)
+
+    def _llenar_pisos(self):
+        self.combo_piso.clear()
+        id_bloque = self.combo_bloque.currentData()
+        vistos = set()
+        for aula in self.aulas:
+            if aula.get("id_bloque") != id_bloque:
+                continue
+            id_piso = aula.get("id_piso")
+            clave = id_piso if id_piso is not None else 0
+            if clave in vistos:
+                continue
+            vistos.add(clave)
+            etiqueta = aula.get("piso_nombre") or "Sin piso"
+            self.combo_piso.addItem(etiqueta, userData=id_piso)
+        indice = 0
+        for i in range(self.combo_piso.count()):
+            if self.combo_piso.itemData(i) == self._piso_actual_id:
+                indice = i
+                break
+        self.combo_piso.setCurrentIndex(indice)
+
+    def _llenar_aulas(self):
+        self.combo_aula.clear()
+        id_piso = self.combo_piso.currentData()
+        indice = 0
+        for aula in self.aulas:
+            if aula.get("id_piso") != id_piso:
+                continue
+            self.combo_aula.addItem(str(aula.get("nombre", "")), userData=aula)
+            if aula.get("id_aula") == self._aula_actual_id:
+                indice = self.combo_aula.count() - 1
+        self.combo_aula.setCurrentIndex(indice)
+
+    def _al_cambiar_bloque(self, *_):
+        self._piso_actual_id = None
+        self._aula_actual_id = None
+        self._llenar_pisos()
+        self._llenar_aulas()
         self._cargar_asientos_aula()
 
+    def _al_cambiar_piso(self, *_):
+        self._aula_actual_id = None
+        self._llenar_aulas()
+        self._cargar_asientos_aula()
+
+    def _cargar_asientos_ocupados(self):
+        if self._ocupados_cargados:
+            return
+        self._ocupados_cargados = True
+        if not self.id_examen:
+            return
+        try:
+            respuesta = requests.get(
+                f"{self.api_base_url}/asignaciones/examen/{self.id_examen}",
+                headers=self.headers,
+                timeout=5,
+            )
+            if respuesta.status_code != 200:
+                return
+            for asignacion in respuesta.json():
+                if asignacion.get("id_asignacion") == self.id_asignacion:
+                    continue
+                self._asientos_ocupados.add(
+                    (asignacion.get("id_aula"), asignacion.get("id_asiento"))
+                )
+        except (requests.RequestException, ValueError):
+            return
+
     def _cargar_asientos_aula(self):
+        self._cargar_asientos_ocupados()
         self.combo_asiento.clear()
         aula = self.combo_aula.currentData()
         if not aula:
@@ -264,14 +406,19 @@ class DialogEditarAsignacion(QDialog):
             if respuesta.status_code != 200:
                 self.btn_guardar.setEnabled(False)
                 return
-            asientos = [a for a in respuesta.json() if a.get("habilitado", True)]
+            asientos = [
+                a for a in respuesta.json()
+                if a.get("habilitado", True)
+                and (aula["id_aula"], a.get("id_asiento"))
+                not in self._asientos_ocupados
+            ]
         except (requests.RequestException, ValueError):
             self.btn_guardar.setEnabled(False)
             return
 
         asientos.sort(key=lambda a: a.get("numero_asiento", 0))
         if not asientos:
-            self.combo_asiento.addItem("Sin asientos habilitados", userData=None)
+            self.combo_asiento.addItem("Sin asientos libres", userData=None)
             self.btn_guardar.setEnabled(False)
             return
 
@@ -355,6 +502,24 @@ class ExamenWorkspaceView(QWidget):
         QPushButton#btnExito:hover   { background: #15803D; }
         QPushButton#btnExito:pressed { background: #166534; }
 
+        QPushButton#btnExcel {
+            background: #1D6F42; color: #FFFFFF; border: none;
+            border-radius: 10px; padding: 0 16px;
+            font-size: 13px; font-weight: 700;
+        }
+        QPushButton#btnExcel:hover   { background: #155B35; }
+        QPushButton#btnExcel:pressed { background: #124A2B; }
+        QPushButton#btnExcel:disabled { background: #B7D4C4; color: #F4FBF7; }
+
+        QPushButton#btnPdf {
+            background: #C0392B; color: #FFFFFF; border: none;
+            border-radius: 10px; padding: 0 16px;
+            font-size: 13px; font-weight: 700;
+        }
+        QPushButton#btnPdf:hover   { background: #A93226; }
+        QPushButton#btnPdf:pressed { background: #8E2A20; }
+        QPushButton#btnPdf:disabled { background: #E7BDB8; color: #FDF2F2; }
+
         QPushButton#btnPeligro {
             background: #FFFFFF; color: #B91C1C;
             border: 1px solid #FCA5A5; border-radius: 10px; padding: 0 18px;
@@ -388,11 +553,17 @@ class ExamenWorkspaceView(QWidget):
         QLineEdit#buscador:hover { border: 1px solid #A9BBD1; }
         QLineEdit#buscador:focus { border: 2px solid #1E54B7; padding: 7px 11px; }
 
-        QSpinBox#spinTolerancia {
+        QLineEdit#campoTolerancia {
             background: #FFFFFF; border: 1px solid #D5DEE9; border-radius: 10px;
             padding: 6px 12px; font-size: 14px; font-weight: 700; color: #0F172A;
         }
-        QSpinBox#spinTolerancia:focus { border: 2px solid #1E54B7; padding: 5px 11px; }
+        QLineEdit#campoTolerancia:focus {
+            border: 2px solid #1E54B7; padding: 5px 11px;
+        }
+        QLabel#unidadTolerancia {
+            color: #64748B; font-size: 13px; font-weight: 700;
+            background: transparent;
+        }
 
         /* ---------- Pestañas ---------- */
         QTabWidget#tabsWorkspace::pane {
@@ -468,7 +639,9 @@ class ExamenWorkspaceView(QWidget):
         self.examen = examen_data
         self.token_data = token_data or {}
         self.api_base_url = api_base_url or AppConfig.get_api_base_url()
-        self.tolerancia_actual = self.examen.get("tolerancia_minutos", 10)
+        self.tolerancia_actual = self.examen.get("tolerancia_minutos")
+        if self.tolerancia_actual is None:
+            self.tolerancia_actual = 10
         self.aulas_disponibles = []
         self.postulantes_examen = []
         self.asignaciones_examen = []
@@ -479,6 +652,19 @@ class ExamenWorkspaceView(QWidget):
     def get_auth_headers(self):
         token = self.token_data.get("access_token", "")
         return {"Authorization": f"Bearer {token}"}
+
+    def eventFilter(self, obj, event):
+        chip = getattr(self, "chip_tolerancia", None)
+        if (
+            chip is not None
+            and obj in (chip, getattr(chip, "lbl_valor", None))
+            and event.type() == QEvent.MouseButtonRelease
+            and hasattr(self, "campo_tol")
+        ):
+            self.campo_tol.setFocus()
+            self.campo_tol.selectAll()
+            return True
+        return super().eventFilter(obj, event)
 
     def _cargar_inicial(self):
         self._resolver_carrera()
@@ -510,6 +696,7 @@ class ExamenWorkspaceView(QWidget):
         nombres = {
             "primario": "btnPrimario", "secundario": "btnSecundario",
             "exito": "btnExito", "peligro": "btnPeligro", "fantasma": "btnFantasma",
+            "excel": "btnExcel", "pdf": "btnPdf",
         }
         boton = QPushButton(texto)
         boton.setObjectName(nombres[tipo])
@@ -517,7 +704,7 @@ class ExamenWorkspaceView(QWidget):
         boton.setFocusPolicy(Qt.NoFocus)
         boton.setMinimumHeight(alto)
         if icono:
-            color = "#FFFFFF" if tipo in ("primario", "exito") else (
+            color = "#FFFFFF" if tipo in ("primario", "exito", "excel", "pdf") else (
                 "#B91C1C" if tipo == "peligro" else "#334155")
             boton.setIcon(_icono(icono, color))
             boton.setIconSize(QSize(26, 20))
@@ -612,10 +799,22 @@ class ExamenWorkspaceView(QWidget):
         textos.addWidget(self.lbl_subtitulo)
         fila.addLayout(textos, 1)
 
-        self.btn_reporte = self._boton("Generar reporte", "primario", "reporte")
-        self.btn_reporte.setMinimumWidth(170)
-        self.btn_reporte.clicked.connect(self.exportar_reporte)
-        fila.addWidget(self.btn_reporte, 0, Qt.AlignBottom)
+        botones_reporte = QHBoxLayout()
+        botones_reporte.setSpacing(10)
+        self.btn_reporte_excel = self._boton(
+            "Generar reporte en Excel", "excel", "reporte"
+        )
+        self.btn_reporte_excel.setMinimumWidth(200)
+        self.btn_reporte_excel.clicked.connect(self.exportar_reporte_excel)
+        self.btn_reporte_pdf = self._boton(
+            "Generar reporte en PDF", "pdf", "reporte"
+        )
+        self.btn_reporte_pdf.setMinimumWidth(190)
+        self.btn_reporte_pdf.clicked.connect(self.exportar_reporte_pdf)
+        botones_reporte.addWidget(self.btn_reporte_excel)
+        botones_reporte.addWidget(self.btn_reporte_pdf)
+        fila.addLayout(botones_reporte)
+        fila.setAlignment(botones_reporte, Qt.AlignBottom)
         caja.addLayout(fila)
 
         chips = QHBoxLayout()
@@ -631,6 +830,12 @@ class ExamenWorkspaceView(QWidget):
             "TOLERANCIA ACTUAL", f"{self.tolerancia_actual} min",
             destacado=True, guardar_valor=True
         )
+        self.chip_tolerancia.setCursor(Qt.PointingHandCursor)
+        self.chip_tolerancia.setToolTip(
+            "Haz clic para editar la tolerancia en el campo de abajo"
+        )
+        for widget in (self.chip_tolerancia, self.chip_tolerancia.lbl_valor):
+            widget.installEventFilter(self)
         chips.addWidget(self.chip_tolerancia, 1)
         caja.addLayout(chips)
         return caja
@@ -673,33 +878,63 @@ class ExamenWorkspaceView(QWidget):
         btn_menos_5 = self._boton("5", "secundario", "menos", alto=40)
         btn_menos_5.setToolTip("Restar 5 minutos")
         btn_menos_5.clicked.connect(
-            lambda: self.spin_tol.setValue(max(0, self.spin_tol.value() - 5)))
+            lambda: self._poner_tolerancia(self._valor_tolerancia() - 5)
+        )
 
-        self.spin_tol = QSpinBox()
-        self.spin_tol.setObjectName("spinTolerancia")
-        self.spin_tol.setRange(0, 180)
-        self.spin_tol.setValue(self.tolerancia_actual)
-        self.spin_tol.setSuffix(" min")
-        self.spin_tol.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        self.spin_tol.setAlignment(Qt.AlignCenter)
-        self.spin_tol.setMinimumHeight(40)
-        self.spin_tol.setMinimumWidth(110)
-        self.spin_tol.setToolTip("Tolerancia adicional después de la hora de cierre")
+        self.campo_tol = QLineEdit()
+        self.campo_tol.setObjectName("campoTolerancia")
+        self.campo_tol.setValidator(QIntValidator(0, 180, self.campo_tol))
+        self.campo_tol.setText(str(self.tolerancia_actual))
+        self.campo_tol.setPlaceholderText("Minutos")
+        self.campo_tol.setAlignment(Qt.AlignCenter)
+        self.campo_tol.setMinimumHeight(40)
+        self.campo_tol.setFixedWidth(90)
+        self.campo_tol.setToolTip(
+            "Escribe la cantidad de minutos y pulsa Aplicar o Enter"
+        )
+        self.campo_tol.returnPressed.connect(
+            lambda: self.ajustar_tolerancia(self._valor_tolerancia())
+        )
+        lbl_min = QLabel("min")
+        lbl_min.setObjectName("unidadTolerancia")
 
         btn_mas_5 = self._boton("5", "secundario", "mas", alto=40)
-        btn_mas_5.setToolTip("Sumar 5 minutos")
-        btn_mas_5.clicked.connect(lambda: self.ajustar_tolerancia(self.tolerancia_actual + 5))
+        btn_mas_5.setToolTip("Sumar 5 minutos y aplicar")
+        btn_mas_5.clicked.connect(
+            lambda: self.ajustar_tolerancia(self._valor_tolerancia() + 5)
+        )
         btn_mas_10 = self._boton("10", "secundario", "mas", alto=40)
         btn_mas_10.setToolTip("Sumar 10 minutos y aplicar")
-        btn_mas_10.clicked.connect(lambda: self.ajustar_tolerancia(self.tolerancia_actual + 10))
+        btn_mas_10.clicked.connect(
+            lambda: self.ajustar_tolerancia(self._valor_tolerancia() + 10)
+        )
 
         btn_aplicar = self._boton("Aplicar", "primario", alto=40)
         btn_aplicar.setMinimumWidth(100)
-        btn_aplicar.clicked.connect(lambda: self.ajustar_tolerancia(self.spin_tol.value()))
+        btn_aplicar.clicked.connect(
+            lambda: self.ajustar_tolerancia(self._valor_tolerancia())
+        )
 
-        for widget in (btn_menos_5, self.spin_tol, btn_mas_5, btn_mas_10, btn_aplicar):
+        for widget in (
+            btn_menos_5, self.campo_tol, lbl_min,
+            btn_mas_5, btn_mas_10, btn_aplicar,
+        ):
             fila.addWidget(widget)
         return panel
+
+    def _valor_tolerancia(self):
+        try:
+            valor = int(self.campo_tol.text().strip() or 0)
+        except (TypeError, ValueError):
+            valor = 0
+        return max(0, min(180, valor))
+
+    def _poner_tolerancia(self, valor):
+        try:
+            valor = int(valor)
+        except (TypeError, ValueError):
+            valor = 0
+        self.campo_tol.setText(str(max(0, min(180, valor))))
 
     # ══════════════════ PESTAÑA POSTULANTES ══════════════════
     def _crear_tab_postulantes(self):
@@ -857,7 +1092,16 @@ class ExamenWorkspaceView(QWidget):
                     postulante = dict(postulante)
                     postulante["id_asignacion"] = id_asignacion
             huellas = [h for h in postulante.get("huellas", []) if h.get("habilitada")]
-            aula = postulante.get("nombre_aula") or "sin asignar"
+            if postulante.get("nombre_aula"):
+                aula = " · ".join(
+                    parte for parte in (
+                        postulante.get("nombre_bloque"),
+                        postulante.get("nombre_piso"),
+                        postulante.get("nombre_aula"),
+                    ) if parte
+                )
+            else:
+                aula = "sin asignar"
             asiento = postulante.get("numero_asiento")
             estado = str(postulante.get("estado_inscripcion") or "")
 
@@ -898,7 +1142,11 @@ class ExamenWorkspaceView(QWidget):
             lay_celda = QHBoxLayout(celda)
             lay_celda.setContentsMargins(10, 0, 10, 0)
 
-            boton = QPushButton("Editar asiento", celda)
+            boton = QPushButton(
+                "Cambiar asiento" if postulante.get("id_asignacion")
+                else "Asignar asiento",
+                celda,
+            )
             boton.setObjectName("btnTabla")
             boton.setCursor(Qt.PointingHandCursor)
             boton.setFocusPolicy(Qt.NoFocus)
@@ -914,13 +1162,6 @@ class ExamenWorkspaceView(QWidget):
 
     def editar_asignacion_postulante(self, postulante):
         id_asignacion = postulante.get("id_asignacion")
-        if not id_asignacion:
-            QMessageBox.information(
-                self, "Sin asignación",
-                "Este postulante todavía no tiene aula ni asiento asignados.",
-            )
-            return
-
         if not self.aulas_disponibles:
             self.cargar_aulas_sorteo()
         aulas = self.aulas_disponibles
@@ -929,7 +1170,9 @@ class ExamenWorkspaceView(QWidget):
             return
 
         dlg = DialogEditarAsignacion(
-            self, postulante, aulas, self.api_base_url, self.get_auth_headers()
+            self, postulante, aulas, self.api_base_url,
+            self.get_auth_headers(), self.examen.get("id_examen"),
+            id_asignacion,
         )
         if dlg.exec() != QDialog.Accepted:
             return
@@ -938,24 +1181,40 @@ class ExamenWorkspaceView(QWidget):
             return
 
         try:
-            respuesta = requests.patch(
-                f"{self.api_base_url}/asignaciones/{id_asignacion}",
-                json={
-                    "id_aula": aula["id_aula"],
-                    "id_asiento": asiento["id_asiento"],
-                },
-                headers=self.get_auth_headers(),
-                timeout=6,
-            )
-            if respuesta.status_code == 200:
+            if id_asignacion:
+                respuesta = requests.patch(
+                    f"{self.api_base_url}/asignaciones/{id_asignacion}",
+                    json={
+                        "id_aula": aula["id_aula"],
+                        "id_asiento": asiento["id_asiento"],
+                    },
+                    headers=self.get_auth_headers(),
+                    timeout=6,
+                )
+                exito_esperado = 200
+            else:
+                respuesta = requests.post(
+                    f"{self.api_base_url}/asignaciones/asignar-manual",
+                    json={
+                        "id_inscripcion": postulante.get("id_inscripcion"),
+                        "id_examen": self.examen.get("id_examen"),
+                        "id_aula": aula["id_aula"],
+                        "id_asiento": asiento["id_asiento"],
+                    },
+                    headers=self.get_auth_headers(),
+                    timeout=6,
+                )
+                exito_esperado = 201
+
+            if respuesta.status_code == exito_esperado:
                 self.cargar_postulantes_examen()
                 self.cargar_asignaciones()
                 QMessageBox.information(
-                    self, "Asignación actualizada",
-                    "El aula y el asiento se actualizaron correctamente.",
+                    self, "Asignación",
+                    "El aula y el asiento se guardaron correctamente.",
                 )
             else:
-                detalle = respuesta.json().get("detail", "No se pudo actualizar la asignación.")
+                detalle = respuesta.json().get("detail", "No se pudo guardar la asignación.")
                 QMessageBox.warning(self, "Asignación", str(detalle))
         except (requests.RequestException, ValueError) as error:
             QMessageBox.critical(self, "Error de red", str(error))
@@ -1089,23 +1348,50 @@ class ExamenWorkspaceView(QWidget):
                 headers=self.get_auth_headers(),
                 timeout=5
             )
-            self.aulas_disponibles = [
+            aulas = [
                 a for a in (respuesta.json() if respuesta.status_code == 200 else [])
                 if a.get("activa", True)
             ]
+            self.aulas_disponibles = sorted(
+                aulas,
+                key=lambda a: (
+                    a.get("bloque_nombre") or "",
+                    a.get("piso_numero") if a.get("piso_numero") is not None else 999,
+                    a.get("nombre") or "",
+                ),
+            )
         except (requests.RequestException, ValueError):
             self.aulas_disponibles = []
 
         self.lista_aulas.blockSignals(True)
         self.lista_aulas.clear()
         if not self.aulas_disponibles:
-            item = QListWidgetItem("No hay aulas activas. Créalas en «Aulas y Asientos».")
+            item = QListWidgetItem(
+                "No hay aulas activas. Créalas en la sección Infraestructura."
+            )
             item.setFlags(Qt.NoItemFlags)
             self.lista_aulas.addItem(item)
+        grupo_actual = None
         for aula in self.aulas_disponibles:
+            grupo = (
+                aula.get("bloque_nombre") or "Sin bloque",
+                aula.get("piso_nombre") or "Sin piso",
+            )
+            if grupo != grupo_actual:
+                grupo_actual = grupo
+                cabecera = QListWidgetItem("   ".join(grupo))
+                cabecera.setFlags(Qt.NoItemFlags)
+                fuente = cabecera.font()
+                fuente.setBold(True)
+                cabecera.setFont(fuente)
+                cabecera.setForeground(QBrush(QColor("#475569")))
+                cabecera.setBackground(QBrush(QColor("#E2E8F0")))
+                self.lista_aulas.addItem(cabecera)
+
             habilitados = aula.get("asientos_habilitados", 0)
             item = QListWidgetItem(
-                f"{aula.get('nombre')}   ·   {habilitados} de {aula.get('capacidad', 0)} asientos habilitados"
+                f"    {aula.get('nombre')}   ·   {habilitados} de "
+                f"{aula.get('capacidad', 0)} asientos habilitados"
             )
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Unchecked)
@@ -1189,9 +1475,16 @@ class ExamenWorkspaceView(QWidget):
             self.asignaciones_examen = asignaciones
             self.tabla_asignaciones.setRowCount(len(asignaciones))
             for fila, asignacion in enumerate(asignaciones):
+                aula_etiqueta = " · ".join(
+                    parte for parte in (
+                        asignacion.get("nombre_bloque"),
+                        asignacion.get("nombre_piso"),
+                        asignacion.get("nombre_aula"),
+                    ) if parte
+                )
                 valores = (
                     asignacion.get("id_inscripcion"),
-                    asignacion.get("nombre_aula"),
+                    aula_etiqueta,
                     f"#{asignacion.get('numero_asiento')}",
                     asignacion.get("fecha_asignacion")
                 )
@@ -1281,7 +1574,7 @@ class ExamenWorkspaceView(QWidget):
             )
             if res.status_code == 200:
                 self.tolerancia_actual = nuevos_minutos
-                self.spin_tol.setValue(nuevos_minutos)
+                self._poner_tolerancia(nuevos_minutos)
                 self.chip_tolerancia.lbl_valor.setText(f"{self.tolerancia_actual} min")
                 QMessageBox.information(self, "Tolerancia Actualizada", f"La tolerancia se actualizó a {nuevos_minutos} minutos.")
             else:
@@ -1289,20 +1582,29 @@ class ExamenWorkspaceView(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error de red: {str(e)}")
 
-    def exportar_reporte(self):
+    def exportar_reporte_excel(self):
+        self._exportar_reporte("excel")
+
+    def exportar_reporte_pdf(self):
+        self._exportar_reporte("pdf")
+
+    def _exportar_reporte(self, formato):
         id_examen = self.examen.get("id_examen")
-        destino, filtro = QFileDialog.getSaveFileName(
-            self, "Guardar reporte de asistencia", f"reporte_examen_{id_examen}.xlsx",
-            "Excel (*.xlsx);;PDF (*.pdf)"
+        es_pdf = formato == "pdf"
+        extension = ".pdf" if es_pdf else ".xlsx"
+        titulo = "Guardar reporte en PDF" if es_pdf else "Guardar reporte en Excel"
+        filtro = "PDF (*.pdf)" if es_pdf else "Excel (*.xlsx)"
+        destino, _ = QFileDialog.getSaveFileName(
+            self,
+            titulo,
+            f"reporte_examen_{id_examen}{extension}",
+            filtro,
         )
         if not destino:
             return
-        es_pdf = "PDF" in filtro
-        extension = ".pdf" if es_pdf else ".xlsx"
         if not destino.lower().endswith(extension):
             destino += extension
         try:
-            formato = "pdf" if es_pdf else "excel"
             respuesta = requests.get(
                 f"{self.api_base_url}/reportes/examen/{id_examen}/{formato}",
                 headers=self.get_auth_headers(),
@@ -1313,6 +1615,11 @@ class ExamenWorkspaceView(QWidget):
                 return
             with open(destino, "wb") as archivo:
                 archivo.write(respuesta.content)
-            QMessageBox.information(self, "Reporte generado", f"Archivo guardado en:\n{destino}")
+            QMessageBox.information(
+                self, "Reporte generado",
+                f"Archivo guardado en:\n{destino}"
+            )
         except (OSError, requests.RequestException) as error:
-            QMessageBox.critical(self, "Reporte", f"No se pudo guardar el archivo: {error}")
+            QMessageBox.critical(
+                self, "Reporte", f"No se pudo guardar el archivo: {error}"
+            )

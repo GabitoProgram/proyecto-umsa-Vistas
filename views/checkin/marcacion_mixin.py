@@ -14,7 +14,10 @@ import time
 from contextlib import contextmanager
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor, QFont, QGuiApplication, QImage, QPainter, QPainterPath, QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -46,14 +49,37 @@ TIEMPO_REINICIO_LECTOR_MS = 900
 
 # Lado de la foto cuadrada del postulante en la tarjeta de resultado.
 # Si la pantalla es pequeña, bájalo a 200 o 210.
-TAMANO_FOTO_RESULTADO = 240
+TAMANO_FOTO_RESULTADO = 340
 # Esquinas redondeadas de la foto (0 = cuadrado puro).
-RADIO_FOTO = 20
+RADIO_FOTO = 28
 
 # Tamaño de la zona central (panel de espera y tarjeta de resultado).
 # Deben ser iguales para que la pantalla no «salte» al alternar.
-CENTRO_MIN = (760, 640)
-CENTRO_MAX = (980, 780)
+CENTRO_MIN = (1040, 680)
+CENTRO_MAX = (1200, 820)
+
+
+def _medidas_centro():
+    """Calcula tarjeta y foto según el espacio real de la pantalla."""
+    pantalla = QGuiApplication.primaryScreen()
+    disponible = pantalla.availableGeometry() if pantalla else None
+    ancho = disponible.width() if disponible else 1366
+    alto = disponible.height() if disponible else 768
+
+    if ancho >= 1600 and alto >= 900:
+        foto = 340
+    elif ancho >= 1366 and alto >= 768:
+        foto = 280
+    elif ancho >= 1200:
+        foto = 240
+    else:
+        foto = 210
+
+    ancho_max = min(1200, max(820, ancho - 120))
+    alto_max = min(820, max(520, alto - 210))
+    ancho_min = min(ancho_max, max(760, ancho_max - 160))
+    alto_min = min(alto_max, max(480, alto_max - 140))
+    return (ancho_min, alto_min), (ancho_max, alto_max), foto
 
 
 # ── Ajustes de rendimiento ──
@@ -407,6 +433,13 @@ ESTILOS_MARCACION = """
     QLabel#tileValorAula     { color: #FFFFFF; font-size: 34px; font-weight: 800; }
     QLabel#tileValorAsiento  { color: #FFFFFF; font-size: 52px; font-weight: 800; }
 
+    /* Bloque del postulante y dirección del bloque */
+    QFrame#tileUbicacion {
+        background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 14px;
+    }
+    QLabel#tileValorBloque  { color: #0F2C59; font-size: 24px; font-weight: 800; }
+    QLabel#tileDireccion    { color: #475569; font-size: 15px; font-weight: 600; }
+
     QFrame#motivo {
         background: #FEF2F2; border: 1px solid #FECACA; border-radius: 14px;
     }
@@ -441,6 +474,26 @@ ESTILOS_MARCACION = """
 
 class MarcacionMixin:
     # ══════════════════════ CICLO DE VIDA ══════════════════════
+    @staticmethod
+    def _texto_carreras(data_examen: dict):
+        carreras = []
+        for carrera in data_examen.get("carreras") or []:
+            nombre = str(carrera).strip() if carrera else ""
+            if nombre and nombre not in carreras:
+                carreras.append(nombre)
+        if not carreras:
+            carrera = data_examen.get("carrera")
+            if carrera:
+                carreras.append(str(carrera).strip())
+        if not carreras:
+            return "Carreras: --", ""
+        visibles = carreras[:5]
+        texto = ", ".join(visibles)
+        restantes = len(carreras) - len(visibles)
+        if restantes > 0:
+            texto += f" +{restantes}"
+        return f"Carreras: {texto}", ", ".join(carreras)
+
     def set_examen(self, data_examen: dict):
         examen_anterior = self.info_examen.get("id_examen")
         examen_nuevo = data_examen.get("id_examen")
@@ -448,7 +501,9 @@ class MarcacionMixin:
         if getattr(self, "_estacion_activa", False) and not mismo_examen:
             self.detener_estacion()
         self.info_examen = data_examen
-        self.lbl_materia.setText(f"Materia: {data_examen.get('materia', '--')}")
+        texto_carreras, carreras_completas = self._texto_carreras(data_examen)
+        self.lbl_carreras.setText(texto_carreras)
+        self.lbl_carreras.setToolTip(carreras_completas)
         self.lbl_aula.setText(f"Aula: {data_examen.get('nombre_aula', '--')}")
         self.lbl_cierre.setText(f"Cierre: {data_examen.get('cierra_a_las', '--')}")
         if not mismo_examen:
@@ -642,11 +697,14 @@ class MarcacionMixin:
         # Identidad (foto cuadrada; las iniciales quedan de respaldo)
         indice = sum(ord(c) for c in str(ci or nombre)) % len(_COLORES_AVATAR)
         fondo, texto = _COLORES_AVATAR[indice]
+        tamano_foto = getattr(
+            self, "_tamano_foto_resultado", TAMANO_FOTO_RESULTADO
+        )
         self.lbl_res_avatar.setPixmap(QPixmap())
         self.lbl_res_avatar.setText(_iniciales(nombre))
         self.lbl_res_avatar.setStyleSheet(
             f"background: {fondo}; color: {texto}; border-radius: {RADIO_FOTO}px;"
-            f"font-size: {int(TAMANO_FOTO_RESULTADO * 0.34)}px; font-weight: 800;"
+            f"font-size: {int(tamano_foto * 0.34)}px; font-weight: 800;"
         )
         self._cargar_foto_postulante(data.get("id_postulante") or candidato.get("id_postulante"))
 
@@ -670,6 +728,16 @@ class MarcacionMixin:
         # también puede devolver ``hora_ingreso`` ya formateada.
         hora = data.get("hora_ingreso") or data.get("fecha_hora")
         self.lbl_res_hora.setText(_formatear_hora(hora) if hora else "—")
+
+        piso = str(data.get("piso") or "")
+        bloque = str(data.get("bloque") or "")
+        direccion = str(data.get("direccion_bloque") or "")
+        self.bloque_ubicacion.setVisible(
+            aceptado and bool(piso or bloque or direccion)
+        )
+        self.lbl_res_piso.setText(piso or "—")
+        self.lbl_res_bloque.setText(bloque or "Sin bloque")
+        self.lbl_res_direccion.setText(direccion or "Sin dirección registrada")
 
         self.pila_cuerpo.setCurrentIndex(1)
         self._mostrar_tarjeta(tono)
@@ -719,7 +787,10 @@ class MarcacionMixin:
         self.lbl_res_avatar.setStyleSheet("background: transparent; border: none;")
         self.lbl_res_avatar.setText("")
         self.lbl_res_avatar.setAlignment(Qt.AlignCenter)
-        self.lbl_res_avatar.setPixmap(_pixmap_cuadrado(imagen, TAMANO_FOTO_RESULTADO))
+        tamano_foto = getattr(
+            self, "_tamano_foto_resultado", TAMANO_FOTO_RESULTADO
+        )
+        self.lbl_res_avatar.setPixmap(_pixmap_cuadrado(imagen, tamano_foto))
 
     def mostrar_resultado(self, exito: bool, titulo: str, detalle: str, asiento: str,
                           tono: str = None):
@@ -760,6 +831,10 @@ class MarcacionMixin:
         self.lbl_res_pie.setText("")
         self.lbl_res_nombre.setText("")
         self.lbl_res_asiento.setText("")
+        self.lbl_res_piso.setText("")
+        self.lbl_res_bloque.setText("")
+        self.lbl_res_direccion.setText("")
+        self.bloque_ubicacion.setVisible(False)
         self.lbl_res_avatar.setPixmap(QPixmap())
         self.lbl_res_avatar.setText("?")
         self.lbl_res_avatar.setStyleSheet("")
@@ -892,10 +967,14 @@ class MarcacionMixin:
         return marco, valor
 
     def _crear_tarjeta_resultado(self):
+        centro_min, centro_max, foto = _medidas_centro()
+        self._centro_min = centro_min
+        self._centro_max = centro_max
+        self._tamano_foto_resultado = foto
         tarjeta = QFrame()
         tarjeta.setObjectName("resultCard")
-        tarjeta.setMinimumSize(*CENTRO_MIN)
-        tarjeta.setMaximumSize(*CENTRO_MAX)
+        tarjeta.setMinimumSize(*centro_min)
+        tarjeta.setMaximumSize(*centro_max)
         raiz = QVBoxLayout(tarjeta)
         raiz.setContentsMargins(0, 0, 0, 0)
         raiz.setSpacing(0)
@@ -951,46 +1030,38 @@ class MarcacionMixin:
         lay_simple.addStretch()
         self.pila_cuerpo.addWidget(simple)
 
-        # Página 1: datos del postulante (todo centrado)
+        # Página 1: datos a la izquierda y foto a la derecha
         acceso = QWidget()
-        lay_acceso = QVBoxLayout(acceso)
-        lay_acceso.setContentsMargins(34, 20, 34, 14)
-        lay_acceso.setSpacing(12)
+        lay_acceso = QHBoxLayout(acceso)
+        lay_acceso.setContentsMargins(34, 22, 34, 18)
+        lay_acceso.setSpacing(28)
 
-        # Foto cuadrada al centro
-        self.lbl_res_avatar = QLabel("?")
-        self.lbl_res_avatar.setFixedSize(TAMANO_FOTO_RESULTADO, TAMANO_FOTO_RESULTADO)
-        self.lbl_res_avatar.setAlignment(Qt.AlignCenter)
-        lay_acceso.addStretch(1)
-        lay_acceso.addWidget(self.lbl_res_avatar, 0, Qt.AlignHCenter)
+        col_datos = QVBoxLayout()
+        col_datos.setSpacing(10)
 
-        # Nombre
         self.lbl_res_nombre = QLabel("")
         self.lbl_res_nombre.setObjectName("resNombre")
-        self.lbl_res_nombre.setAlignment(Qt.AlignCenter)
+        self.lbl_res_nombre.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.lbl_res_nombre.setWordWrap(True)
-        lay_acceso.addWidget(self.lbl_res_nombre)
+        col_datos.addWidget(self.lbl_res_nombre)
 
-        # CI (grande) y carrera
         fila_chips = QHBoxLayout()
         fila_chips.setSpacing(10)
         self.lbl_res_ci = QLabel("")
         self.lbl_res_ci.setObjectName("resCi")
         self.lbl_res_carrera = QLabel("")
         self.lbl_res_carrera.setObjectName("resChip")
-        fila_chips.addStretch()
         fila_chips.addWidget(self.lbl_res_ci)
         fila_chips.addWidget(self.lbl_res_carrera)
         fila_chips.addStretch()
-        lay_acceso.addLayout(fila_chips)
+        col_datos.addLayout(fila_chips)
 
         self.lbl_res_materia = QLabel("")
         self.lbl_res_materia.setObjectName("resMateria")
-        self.lbl_res_materia.setAlignment(Qt.AlignCenter)
+        self.lbl_res_materia.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.lbl_res_materia.setWordWrap(True)
-        lay_acceso.addWidget(self.lbl_res_materia)
+        col_datos.addWidget(self.lbl_res_materia)
 
-        # Aula (naranja), asiento (azul) e ingreso
         self.bloque_tiles = QWidget()
         tiles = QHBoxLayout(self.bloque_tiles)
         tiles.setContentsMargins(0, 0, 0, 0)
@@ -1001,7 +1072,50 @@ class MarcacionMixin:
         tiles.addWidget(tile_aula, 1)
         tiles.addWidget(tile_asiento, 1)
         tiles.addWidget(tile_hora, 1)
-        lay_acceso.addWidget(self.bloque_tiles)
+        col_datos.addWidget(self.bloque_tiles)
+
+        self.bloque_ubicacion = QFrame()
+        self.bloque_ubicacion.setObjectName("tileUbicacion")
+        fila_ubicacion = QHBoxLayout(self.bloque_ubicacion)
+        fila_ubicacion.setContentsMargins(18, 9, 18, 9)
+        fila_ubicacion.setSpacing(24)
+
+        col_piso = QVBoxLayout()
+        col_piso.setSpacing(1)
+        etiqueta_piso = QLabel("PISO")
+        etiqueta_piso.setObjectName("tileEtiqueta")
+        etiqueta_piso.setFont(_fuente_etiqueta(10, 1.5))
+        self.lbl_res_piso = QLabel("--")
+        self.lbl_res_piso.setObjectName("tileValorBloque")
+        col_piso.addWidget(etiqueta_piso)
+        col_piso.addWidget(self.lbl_res_piso)
+        fila_ubicacion.addLayout(col_piso, 1)
+
+        col_bloque = QVBoxLayout()
+        col_bloque.setSpacing(1)
+        etiqueta_bloque = QLabel("BLOQUE")
+        etiqueta_bloque.setObjectName("tileEtiqueta")
+        etiqueta_bloque.setFont(_fuente_etiqueta(10, 1.5))
+        self.lbl_res_bloque = QLabel("--")
+        self.lbl_res_bloque.setObjectName("tileValorBloque")
+        col_bloque.addWidget(etiqueta_bloque)
+        col_bloque.addWidget(self.lbl_res_bloque)
+        fila_ubicacion.addLayout(col_bloque, 1)
+
+        col_direccion = QVBoxLayout()
+        col_direccion.setSpacing(1)
+        etiqueta_direccion = QLabel("DIRECCIÓN DEL BLOQUE")
+        etiqueta_direccion.setObjectName("tileEtiqueta")
+        etiqueta_direccion.setFont(_fuente_etiqueta(10, 1.5))
+        self.lbl_res_direccion = QLabel("--")
+        self.lbl_res_direccion.setObjectName("tileDireccion")
+        self.lbl_res_direccion.setWordWrap(True)
+        col_direccion.addWidget(etiqueta_direccion)
+        col_direccion.addWidget(self.lbl_res_direccion)
+        fila_ubicacion.addLayout(col_direccion, 2)
+
+        self.bloque_ubicacion.setVisible(False)
+        col_datos.addWidget(self.bloque_ubicacion)
 
         self.bloque_motivo = QFrame()
         self.bloque_motivo.setObjectName("motivo")
@@ -1017,8 +1131,21 @@ class MarcacionMixin:
         lay_motivo.addWidget(etiqueta_motivo)
         lay_motivo.addWidget(self.lbl_res_motivo)
         self.bloque_motivo.setVisible(False)
-        lay_acceso.addWidget(self.bloque_motivo)
-        lay_acceso.addStretch(1)
+        col_datos.addWidget(self.bloque_motivo)
+        col_datos.addStretch(1)
+
+        col_foto = QVBoxLayout()
+        col_foto.setSpacing(0)
+        self.lbl_res_avatar = QLabel("?")
+        self.lbl_res_avatar.setFixedSize(foto, foto)
+        self.lbl_res_avatar.setAlignment(Qt.AlignCenter)
+        col_foto.addWidget(
+            self.lbl_res_avatar, 0, Qt.AlignTop | Qt.AlignHCenter
+        )
+        col_foto.addStretch(1)
+
+        lay_acceso.addLayout(col_datos, 1)
+        lay_acceso.addLayout(col_foto, 0)
         self.pila_cuerpo.addWidget(acceso)
 
         raiz.addWidget(self.pila_cuerpo, 1)
@@ -1063,9 +1190,13 @@ class MarcacionMixin:
         # Zona central: espera o resultado (se alternan)
         centro = QHBoxLayout()
         centro.setSpacing(0)
+        centro_min, centro_max, foto = _medidas_centro()
+        self._centro_min = centro_min
+        self._centro_max = centro_max
+        self._tamano_foto_resultado = foto
         self.panel_espera = PanelEspera()
-        self.panel_espera.setMinimumSize(*CENTRO_MIN)
-        self.panel_espera.setMaximumSize(*CENTRO_MAX)
+        self.panel_espera.setMinimumSize(*centro_min)
+        self.panel_espera.setMaximumSize(*centro_max)
         self.tarjeta_resultado = self._crear_tarjeta_resultado()
         self.tarjeta_resultado.setVisible(False)
         centro.addStretch(1)
@@ -1087,6 +1218,7 @@ class MarcacionMixin:
 
         self.lbl_resumen_huellas = QLabel("Examen: comprobando huellas habilitadas…")
         self.lbl_resumen_huellas.setObjectName("resumenChip")
+        self.lbl_resumen_huellas.setWordWrap(True)
         fila.addWidget(self.lbl_resumen_huellas)
 
         # El lector se inicia automáticamente al entrar a esta pantalla.

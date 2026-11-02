@@ -5,9 +5,13 @@ import logging
 
 import cv2
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QThread, QTimer, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor, QFont, QGuiApplication, QIcon, QImage, QPainter, QPainterPath,
+    QPen, QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
+    QBoxLayout,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -30,8 +34,31 @@ USAR_DIRECTSHOW = True
 
 # Foto cuadrada del postulante en la ficha de resultado.
 # Si la ventana es baja, bájalo a 170 o 180.
-TAMANO_FOTO_FICHA = 200
-RADIO_FOTO_FICHA = 18   # esquinas redondeadas (0 = cuadrado puro)
+TAMANO_FOTO_FICHA = 280
+RADIO_FOTO_FICHA = 24   # esquinas redondeadas (0 = cuadrado puro)
+
+
+def _pantalla_ancha():
+    """Indica si cámara y ficha caben una al lado de la otra."""
+    pantalla = QGuiApplication.primaryScreen()
+    disponible = pantalla.availableGeometry() if pantalla else None
+    return (disponible.width() if disponible else 1366) >= 1260
+
+
+def _medidas_ficha():
+    """Ajusta la foto de la ficha al espacio disponible de la pantalla."""
+    pantalla = QGuiApplication.primaryScreen()
+    disponible = pantalla.availableGeometry() if pantalla else None
+    ancho = disponible.width() if disponible else 1366
+    alto = disponible.height() if disponible else 768
+
+    if ancho >= 1600 and alto >= 900:
+        return 300
+    if ancho >= 1366 and alto >= 768:
+        return 260
+    if ancho >= 1200:
+        return 230
+    return 200
 _COLORES_AVATAR = (
     ("#DBEAFE", "#1E40AF"),
     ("#DCFCE7", "#166534"),
@@ -311,7 +338,7 @@ class VisorCamara(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(560, 380)
+        self.setMinimumSize(360, 270)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._imagen = None
         self._mensaje = "Cámara detenida.\nPulsa «Iniciar detección» para comenzar."
@@ -602,6 +629,13 @@ ESTILOS_RECONOCIMIENTO = """
     QLabel#tileValorAula     { color: #FFFFFF; font-size: 26px; font-weight: 800; }
     QLabel#tileValorAsiento  { color: #FFFFFF; font-size: 42px; font-weight: 800; }
 
+    /* Bloque del postulante y dirección del bloque */
+    QFrame#ubicacionFicha {
+        background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px;
+    }
+    QLabel#ubicacionBloque    { color: #0F2C59; font-size: 19px; font-weight: 800; }
+    QLabel#ubicacionDireccion { color: #475569; font-size: 14px; font-weight: 600; }
+
     QFrame#motivo {
         background: #FEF2F2; border: 1px solid #FECACA; border-radius: 14px;
     }
@@ -846,6 +880,7 @@ class ReconocimientoMixin:
         self.lbl_ficha_avatar.setText("?")
         self.lbl_ficha_avatar.setStyleSheet("")
         self._foto_ficha_id = None
+        self.bloque_ubicacion_ficha.setVisible(False)
         self.pila_ficha.setCurrentIndex(0)
         self._auto_anim_pausa.stop()
         self.barra_pausa.set_fraccion(0.0)
@@ -868,10 +903,11 @@ class ReconocimientoMixin:
         # Identidad
         indice = sum(ord(c) for c in str(ci or nombre)) % len(_COLORES_AVATAR)
         fondo, texto = _COLORES_AVATAR[indice]
+        tamano_foto = getattr(self, "_tamano_foto_ficha", TAMANO_FOTO_FICHA)
         self.lbl_ficha_avatar.setText(_iniciales(nombre))
         self.lbl_ficha_avatar.setStyleSheet(
             f"background: {fondo}; color: {texto}; border-radius: {RADIO_FOTO_FICHA}px;"
-            f"font-size: {int(TAMANO_FOTO_FICHA * 0.34)}px; font-weight: 800;"
+            f"font-size: {int(tamano_foto * 0.34)}px; font-weight: 800;"
         )
         self.lbl_ficha_avatar.setPixmap(QPixmap())
         self.lbl_ficha_avatar.setText(_iniciales(nombre))
@@ -893,6 +929,12 @@ class ReconocimientoMixin:
         self.lbl_ficha_asiento.setText(str(asiento) if asiento else "—")
         hora = data.get("hora_ingreso") or data.get("fecha_hora")
         self.lbl_ficha_hora.setText(_formatear_hora(hora) if hora else "—")
+
+        bloque = str(data.get("bloque") or "")
+        direccion = str(data.get("direccion_bloque") or "")
+        self.bloque_ubicacion_ficha.setVisible(aceptado and bool(bloque or direccion))
+        self.lbl_ficha_bloque.setText(bloque or "Sin bloque")
+        self.lbl_ficha_direccion.setText(direccion or "Sin dirección registrada")
 
         self.pila_ficha.setCurrentIndex(1)
 
@@ -939,7 +981,8 @@ class ReconocimientoMixin:
         self.lbl_ficha_avatar.setStyleSheet("background: transparent; border: none;")
         self.lbl_ficha_avatar.setText("")
         self.lbl_ficha_avatar.setAlignment(Qt.AlignCenter)
-        self.lbl_ficha_avatar.setPixmap(_pixmap_cuadrado(imagen, TAMANO_FOTO_FICHA))
+        tamano_foto = getattr(self, "_tamano_foto_ficha", TAMANO_FOTO_FICHA)
+        self.lbl_ficha_avatar.setPixmap(_pixmap_cuadrado(imagen, tamano_foto))
 
     # ══════════════════════ INTERFAZ ══════════════════════
     def _crear_tile_ficha(self, etiqueta, variante="tile"):
@@ -975,8 +1018,10 @@ class ReconocimientoMixin:
 
         titulo = QLabel("Detección automática de rostro")
         titulo.setObjectName("cardTitulo")
+        titulo.setWordWrap(True)
         nota = QLabel("Mire a la cámara. El sistema lo identifica y registra su ingreso solo.")
         nota.setObjectName("cardNota")
+        nota.setWordWrap(True)
         lay.addWidget(titulo)
         lay.addWidget(nota)
 
@@ -1070,9 +1115,10 @@ class ReconocimientoMixin:
             self.auto_estado.set_tono("neutro")
 
     def _crear_ficha(self):
+        self._tamano_foto_ficha = _medidas_ficha()
         ficha = QFrame()
         ficha.setObjectName("card")
-        ficha.setMinimumWidth(400)
+        ficha.setMinimumWidth(360)
         raiz = QVBoxLayout(ficha)
         raiz.setContentsMargins(0, 0, 0, 0)
         raiz.setSpacing(0)
@@ -1139,7 +1185,9 @@ class ReconocimientoMixin:
 
         # Foto cuadrada al centro
         self.lbl_ficha_avatar = QLabel("?")
-        self.lbl_ficha_avatar.setFixedSize(TAMANO_FOTO_FICHA, TAMANO_FOTO_FICHA)
+        self.lbl_ficha_avatar.setFixedSize(
+            self._tamano_foto_ficha, self._tamano_foto_ficha
+        )
         self.lbl_ficha_avatar.setAlignment(Qt.AlignCenter)
         lay_datos.addStretch(1)
         lay_datos.addWidget(self.lbl_ficha_avatar, 0, Qt.AlignHCenter)
@@ -1179,6 +1227,25 @@ class ReconocimientoMixin:
         tiles.addWidget(tile_asiento, 1)
         tiles.addWidget(tile_hora, 1)
         lay_datos.addWidget(self.bloque_tiles)
+
+        self.bloque_ubicacion_ficha = QFrame()
+        self.bloque_ubicacion_ficha.setObjectName("ubicacionFicha")
+        lay_ubicacion = QVBoxLayout(self.bloque_ubicacion_ficha)
+        lay_ubicacion.setContentsMargins(14, 8, 14, 8)
+        lay_ubicacion.setSpacing(1)
+        etiqueta_bloque = QLabel("BLOQUE")
+        etiqueta_bloque.setObjectName("tileEtiqueta")
+        etiqueta_bloque.setFont(_fuente_etiqueta(9, 1.4))
+        self.lbl_ficha_bloque = QLabel("--")
+        self.lbl_ficha_bloque.setObjectName("ubicacionBloque")
+        self.lbl_ficha_direccion = QLabel("--")
+        self.lbl_ficha_direccion.setObjectName("ubicacionDireccion")
+        self.lbl_ficha_direccion.setWordWrap(True)
+        lay_ubicacion.addWidget(etiqueta_bloque)
+        lay_ubicacion.addWidget(self.lbl_ficha_bloque)
+        lay_ubicacion.addWidget(self.lbl_ficha_direccion)
+        self.bloque_ubicacion_ficha.setVisible(False)
+        lay_datos.addWidget(self.bloque_ubicacion_ficha)
 
         self.bloque_motivo = QFrame()
         self.bloque_motivo.setObjectName("motivo")
@@ -1220,7 +1287,11 @@ class ReconocimientoMixin:
         tab_auto.setObjectName("tabReconocimiento")
         tab_auto.setAttribute(Qt.WA_StyledBackground, True)
         tab_auto.setStyleSheet(ESTILOS_RECONOCIMIENTO)
-        layout_auto = QHBoxLayout(tab_auto)
+        direccion = (
+            QBoxLayout.LeftToRight if _pantalla_ancha()
+            else QBoxLayout.TopToBottom
+        )
+        layout_auto = QBoxLayout(direccion, tab_auto)
         layout_auto.setContentsMargins(24, 20, 24, 18)
         layout_auto.setSpacing(18)
 

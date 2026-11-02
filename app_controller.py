@@ -1,6 +1,7 @@
 ﻿import requests
 from PySide6.QtWidgets import QStackedWidget, QMainWindow, QMessageBox
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QGuiApplication
 
 from desktop.config.app_config import AppConfig
 from desktop.api.client import api
@@ -44,7 +45,15 @@ class AppController(QMainWindow):
         super().__init__()
         self.api_base_url = api_base_url or AppConfig.get_api_base_url()
         self.setWindowTitle("Sistema Biométrico - UMSA Medicina")
-        self.setMinimumSize(1100, 720)
+        pantalla = QGuiApplication.primaryScreen()
+        disponible = pantalla.availableGeometry() if pantalla else None
+        if disponible:
+            ancho = min(1470, max(760, disponible.width() - 80))
+            alto = min(920, max(520, disponible.height() - 100))
+        else:
+            ancho, alto = 1240, 760
+        self.setMinimumSize(min(1100, ancho), min(700, alto))
+        self.resize(ancho, alto)
 
         self.stack = QStackedWidget(self)
         self.setCentralWidget(self.stack)
@@ -125,7 +134,13 @@ class AppController(QMainWindow):
                         return
                     if not self.login_view.inactivo_por(self.SEGUNDOS_LOGIN_MANUAL):
                         return
-                self.mostrar_checkin(activos[0])
+                data_examen = dict(activos[0])
+                data_examen["carreras"] = [
+                    activo.get("carrera")
+                    for activo in activos
+                    if activo.get("carrera")
+                ]
+                self.mostrar_checkin(data_examen)
             else:
                 self.mostrar_login()
         elif status == 401:
