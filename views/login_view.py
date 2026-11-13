@@ -4,12 +4,16 @@ import time
 import requests
 from PySide6.QtCore import Qt, Signal, QPointF
 from PySide6.QtGui import (
+    QAction,
     QBrush,
     QColor,
     QFont,
+    QIcon,
     QLinearGradient,
     QPainter,
+    QPainterPath,
     QPalette,
+    QPen,
     QPixmap,
 )
 from PySide6.QtWidgets import (
@@ -34,6 +38,38 @@ def _fuente(px, peso=QFont.Bold, espaciado=0.0):
     if espaciado:
         fuente.setLetterSpacing(QFont.AbsoluteSpacing, espaciado)
     return fuente
+
+
+def _icono_ojo(tachado, color="#64748B"):
+    """Icono de ojo dibujado por código (sin archivos externos).
+
+    ``tachado=False`` → ojo abierto (la contraseña está oculta; clic para mostrar).
+    ``tachado=True``  → ojo tachado (la contraseña se ve; clic para ocultar).
+    Se dibuja al doble de resolución para que se vea nítido en pantallas HiDPI.
+    """
+    lado = 20
+    pix = QPixmap(lado * 2, lado * 2)
+    pix.setDevicePixelRatio(2)
+    pix.fill(Qt.transparent)
+
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing)
+    lapiz = QPen(QColor(color), 1.7)
+    lapiz.setCapStyle(Qt.RoundCap)
+    lapiz.setJoinStyle(Qt.RoundJoin)
+    p.setPen(lapiz)
+    p.setBrush(Qt.NoBrush)
+
+    contorno = QPainterPath()
+    contorno.moveTo(2, 10)
+    contorno.quadTo(10, 2, 18, 10)
+    contorno.quadTo(10, 18, 2, 10)
+    p.drawPath(contorno)
+    p.drawEllipse(QPointF(10, 10), 2.7, 2.7)
+    if tachado:
+        p.drawLine(QPointF(4, 16), QPointF(16, 4))
+    p.end()
+    return QIcon(pix)
 
 
 class GradientPanel(QWidget):
@@ -123,6 +159,11 @@ class LoginView(QWidget):
             background: #FFFFFF;
         }
 
+        QToolTip {
+            background: #0F172A; color: #FFFFFF; border: none;
+            padding: 6px 10px; font-size: 12px;
+        }
+
         QLabel#errorLabel {
             color: #B91C1C; background: #FEF2F2;
             border: 1px solid #FECACA; border-radius: 8px;
@@ -145,6 +186,7 @@ class LoginView(QWidget):
         self._login_en_curso = False
         self._entrega_login = None
         self._ultima_actividad = time.monotonic()
+        self._ojo_pass = None
         self.init_ui()
 
     # ------------------------------------------------------------------
@@ -175,6 +217,9 @@ class LoginView(QWidget):
     def limpiar_formulario(self):
         self.txt_user.clear()
         self.txt_pass.clear()
+        # Al limpiar (cierre de sesión o inactividad) la contraseña vuelve a ocultarse.
+        if self._ojo_pass is not None:
+            self._ojo_pass.setChecked(False)
         self.lbl_error.clear()
         self.btn_ingresar.setText("Ingresar")
         self.btn_ingresar.setEnabled(True)
@@ -361,11 +406,24 @@ class LoginView(QWidget):
         campo.setMinimumHeight(46)
         if password:
             campo.setEchoMode(QLineEdit.Password)
+            # Botón «ojo» al final del campo para mostrar / ocultar la contraseña.
+            self._ojo_pass = QAction(campo)
+            self._ojo_pass.setCheckable(True)
+            self._ojo_pass.setIcon(_icono_ojo(False))
+            self._ojo_pass.setToolTip("Mostrar contraseña")
+            self._ojo_pass.toggled.connect(self._mostrar_contrasena)
+            campo.addAction(self._ojo_pass, QLineEdit.TrailingPosition)
         # QSS no soporta ::placeholder; el color se define con la paleta.
         paleta = campo.palette()
         paleta.setColor(QPalette.PlaceholderText, QColor("#94A3B8"))
         campo.setPalette(paleta)
         return campo
+
+    def _mostrar_contrasena(self, visible):
+        self.txt_pass.setEchoMode(QLineEdit.Normal if visible else QLineEdit.Password)
+        self._ojo_pass.setIcon(_icono_ojo(visible))
+        self._ojo_pass.setToolTip("Ocultar contraseña" if visible else "Mostrar contraseña")
+        self.txt_pass.setFocus()
 
     def showEvent(self, event):
         super().showEvent(event)

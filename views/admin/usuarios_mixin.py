@@ -4,8 +4,10 @@ from PySide6.QtWidgets import (
     QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
     QDialog, QFormLayout, QCheckBox, QDialogButtonBox, QFrame,
 )
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFontMetrics, QPainter
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import (
+    QAction, QColor, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap,
+)
 
 
 # ======================================================================
@@ -25,9 +27,57 @@ def _qss_boton(fondo, texto, borde, hover, pressed, dis_texto, dis_fondo, dis_bo
     )
 
 
+def _icono_ojo(tachado, color="#64748B"):
+    """Icono de ojo dibujado por código (sin archivos externos).
+
+    ``tachado=False`` → ojo abierto (la contraseña está oculta; clic para mostrar).
+    ``tachado=True``  → ojo tachado (la contraseña se ve; clic para ocultar).
+    Se dibuja al doble de resolución para que se vea nítido en pantallas HiDPI.
+    """
+    lado = 20
+    pix = QPixmap(lado * 2, lado * 2)
+    pix.setDevicePixelRatio(2)
+    pix.fill(Qt.transparent)
+
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing)
+    lapiz = QPen(QColor(color), 1.7)
+    lapiz.setCapStyle(Qt.RoundCap)
+    lapiz.setJoinStyle(Qt.RoundJoin)
+    p.setPen(lapiz)
+    p.setBrush(Qt.NoBrush)
+
+    contorno = QPainterPath()
+    contorno.moveTo(2, 10)
+    contorno.quadTo(10, 2, 18, 10)
+    contorno.quadTo(10, 18, 2, 10)
+    p.drawPath(contorno)
+    p.drawEllipse(QPointF(10, 10), 2.7, 2.7)
+    if tachado:
+        p.drawLine(QPointF(4, 16), QPointF(16, 4))
+    p.end()
+    return QIcon(pix)
+
+
+def _agregar_ojo(campo):
+    """Agrega al final de un QLineEdit un botón-ojo y devuelve su QAction."""
+    accion = QAction(campo)
+    accion.setCheckable(True)
+    accion.setIcon(_icono_ojo(False))
+    accion.setToolTip("Mostrar contraseña")
+    campo.addAction(accion, QLineEdit.TrailingPosition)
+    return accion
+
+
 ESTILO_DIALOGO = """
     QDialog { background: #F1F5F9; }
     QLabel { color: #334155; font-weight: 600; background: transparent; border: none; }
+    QLabel#tituloDialogo { color: #0F2C59; font-size: 20px; font-weight: 800; }
+    QLabel#subtituloDialogo { color: #64748B; font-size: 12px; font-weight: 500; }
+    QToolTip {
+        background: #0F172A; color: #FFFFFF; border: none;
+        padding: 6px 10px; font-size: 12px;
+    }
 
     /* ---------- Campos ---------- */
     QLineEdit, QComboBox {
@@ -154,8 +204,17 @@ class DialogoUsuario(QDialog):
         raiz.setSpacing(14)
 
         titulo = QLabel("Editar usuario" if usuario else "Nuevo usuario")
-        titulo.setStyleSheet("color: #0F2C59; font-size: 20px; font-weight: 800;")
-        raiz.addWidget(titulo)
+        titulo.setObjectName("tituloDialogo")
+        subtitulo = QLabel(
+            "Modifique los datos de la cuenta." if usuario
+            else "Complete los datos para crear la cuenta."
+        )
+        subtitulo.setObjectName("subtituloDialogo")
+        encabezado = QVBoxLayout()
+        encabezado.setSpacing(2)
+        encabezado.addWidget(titulo)
+        encabezado.addWidget(subtitulo)
+        raiz.addLayout(encabezado)
 
         tarjeta = QFrame()
         tarjeta.setObjectName("tarjetaDialogo")
@@ -193,6 +252,13 @@ class DialogoUsuario(QDialog):
         self.confirmacion = QLineEdit()
         self.confirmacion.setEchoMode(QLineEdit.Password)
         self.confirmacion.setPlaceholderText("Repita la contraseña")
+
+        # Botón «ojo» en cada campo de contraseña. Los dos van enlazados:
+        # al mostrar una se muestra también la otra, para compararlas.
+        self._ojos = (_agregar_ojo(self.password), _agregar_ojo(self.confirmacion))
+        for ojo in self._ojos:
+            ojo.toggled.connect(self._mostrar_contrasenas)
+
         self.activo = InterruptorEstado()
         self.activo.setChecked(usuario.get("activo", True) if usuario else True)
 
@@ -224,6 +290,16 @@ class DialogoUsuario(QDialog):
         botones.accepted.connect(self._validar_y_aceptar)
         botones.rejected.connect(self.reject)
         raiz.addWidget(botones, 0, Qt.AlignRight)
+
+    def _mostrar_contrasenas(self, visible):
+        """Muestra u oculta las dos contraseñas a la vez (ojo de cualquiera de ellas)."""
+        for campo, ojo in ((self.password, self._ojos[0]), (self.confirmacion, self._ojos[1])):
+            campo.setEchoMode(QLineEdit.Normal if visible else QLineEdit.Password)
+            ojo.blockSignals(True)      # evita que un ojo dispare al otro en bucle
+            ojo.setChecked(visible)
+            ojo.blockSignals(False)
+            ojo.setIcon(_icono_ojo(visible))
+            ojo.setToolTip("Ocultar contraseña" if visible else "Mostrar contraseña")
 
     def _validar_y_aceptar(self):
         if not self.nombre.text().strip() or not self.nombre_usuario.text().strip():
@@ -267,8 +343,41 @@ def _item_etiqueta(texto, color):
     return item
 
 
+def _item_centrado(texto="", dato=None):
+    """Celda centrada. ``dato`` se guarda en Qt.UserRole (el texto lo dibuja un chip)."""
+    item = QTableWidgetItem(texto)
+    item.setTextAlignment(Qt.AlignCenter)
+    if dato is not None:
+        item.setData(Qt.UserRole, dato)
+    return item
+
+
+def _chip_tabla(texto, estilo):
+    """Chip de color centrado en la celda (rol y estado).
+
+    Alto fijo y alineación vertical al centro: así el chip nunca se estira
+    hasta tocar el borde de la fila.
+    """
+    contenedor = QWidget()
+    contenedor.setObjectName("chipContenedor")
+    contenedor.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+    fila = QHBoxLayout(contenedor)
+    fila.setContentsMargins(6, 0, 6, 0)
+    fila.setSpacing(0)
+
+    chip = QLabel(texto)
+    chip.setObjectName(estilo)
+    chip.setAlignment(Qt.AlignCenter)
+    chip.setFixedHeight(26)
+    chip.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    fila.addWidget(chip, 0, Qt.AlignCenter)
+    return contenedor
+
+
 class UsuariosMixin:
-    ALTO_BOTON_TABLA = 32
+    ALTO_FILA = 56
+    ALTO_BOTON_TABLA = 30
     # Anchos fijos: el layout de la celda calcula el tamaño antes de aplicar el
     # estilo y, con tamaños automáticos, los botones se montaban uno sobre otro.
     ANCHO_BTN_EDITAR = 88
@@ -294,6 +403,31 @@ class UsuariosMixin:
         QFrame#tarjetaUsuarios {
             background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 16px;
         }
+        QToolTip {
+            background: #0F172A; color: #FFFFFF; border: none;
+            padding: 6px 10px; font-size: 12px;
+        }
+
+        /* ---------- Encabezado ---------- */
+        QLabel#tituloUsuarios { color: #0F2C59; font-size: 28px; font-weight: 800; }
+        QLabel#subtituloUsuarios { color: #64748B; font-size: 13px; font-weight: 500; }
+        QLabel#notaUsuarios {
+            color: #0E4F63; background: #E6F6FA; border: 1px solid #B5E3EE;
+            border-radius: 12px; padding: 10px 16px;
+            font-size: 13px; font-weight: 500;
+        }
+
+        /* ---------- Chips de rol y estado ---------- */
+        QWidget#chipContenedor { background: transparent; }
+        QLabel#chipRolSuper, QLabel#chipRolAdmin,
+        QLabel#chipActivo, QLabel#chipInactivo {
+            border-radius: 13px; padding: 0 14px;
+            font-size: 11px; font-weight: 700;
+        }
+        QLabel#chipRolSuper { background: #E0EAFB; color: #1E4E96; }
+        QLabel#chipRolAdmin { background: #F1F5F9; color: #475569; }
+        QLabel#chipActivo { background: #DCFCE7; color: #15803D; }
+        QLabel#chipInactivo { background: #FEE2E2; color: #B91C1C; }
 
         /* ---------- Tabla ---------- */
         QTableWidget {
@@ -305,14 +439,19 @@ class UsuariosMixin:
         QHeaderView::section {
             background: #F8FAFC; color: #64748B;
             border: none; border-bottom: 1px solid #E2E8F0;
-            padding: 10px 8px; font-size: 11px; font-weight: 700;
+            padding: 12px 10px; font-size: 11px; font-weight: 700;
         }
-        QTableWidget::item { padding: 6px 8px; border: none; }
+        QTableWidget::item { padding: 6px 12px; border-bottom: 1px solid #F1F5F9; }
         QTableWidget::item:selected { background: #E8F0FD; color: #0F172A; }
+        QTableCornerButton::section { background: #F8FAFC; border: none; }
+        QWidget#celdaAcciones { background: transparent; }
         QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
         QScrollBar::handle:vertical { background: #CBD5E1; border-radius: 4px; min-height: 30px; }
         QScrollBar::handle:vertical:hover { background: #94A3B8; }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
+        QScrollBar::handle:horizontal { background: #CBD5E1; border-radius: 4px; min-width: 30px; }
+        QScrollBar::handle:horizontal:hover { background: #94A3B8; }
+        QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
 
         /* ---------- Botones de la cabecera ---------- */
         QPushButton#btnPrimario {
@@ -346,11 +485,13 @@ class UsuariosMixin:
         return self._usuario_de_fila(fila)
 
     def _usuario_de_fila(self, fila):
+        item_rol = self.usuarios_table.item(fila, 3)
         return {
             "id_usuario": int(self.usuarios_table.item(fila, 0).text()),
             "usuario": self.usuarios_table.item(fila, 1).text(),
             "nombre_completo": self.usuarios_table.item(fila, 2).text(),
-            "rol": self.usuarios_table.item(fila, 3).text(),
+            # El rol se dibuja con un chip; el dato real vive en UserRole.
+            "rol": item_rol.data(Qt.UserRole) or item_rol.text(),
             "activo": self.usuarios_table.item(fila, 4).data(Qt.UserRole),
         }
 
@@ -375,9 +516,15 @@ class UsuariosMixin:
 
         encabezado = QHBoxLayout()
         encabezado.setSpacing(10)
+        textos = QVBoxLayout()
+        textos.setSpacing(2)
         title = QLabel("Usuarios y roles")
-        title.setStyleSheet("color: #0F2C59; font-size: 28px; font-weight: 800;")
-        encabezado.addWidget(title)
+        title.setObjectName("tituloUsuarios")
+        subtitulo = QLabel("Administre las cuentas que pueden entrar al sistema.")
+        subtitulo.setObjectName("subtituloUsuarios")
+        textos.addWidget(title)
+        textos.addWidget(subtitulo)
+        encabezado.addLayout(textos)
         encabezado.addStretch()
 
         btn_nuevo = QPushButton("Nuevo usuario")
@@ -400,10 +547,8 @@ class UsuariosMixin:
         layout.addLayout(encabezado)
 
         nota = QLabel("Solo un SUPER_ADMIN puede crear, editar o cambiar el estado de un usuario.")
-        nota.setStyleSheet(
-            "color: #0E4F63; background: #E6F6FA; border: 1px solid #B5E3EE; "
-            "border-radius: 12px; padding: 10px 16px; font-size: 13px; font-weight: 500;"
-        )
+        nota.setObjectName("notaUsuarios")
+        nota.setWordWrap(True)
         layout.addWidget(nota)
 
         tarjeta = QFrame()
@@ -424,11 +569,17 @@ class UsuariosMixin:
         self.usuarios_table.setColumnWidth(5, self.ANCHO_COLUMNA_ACCIONES)
         cabecera.setHighlightSections(False)
         cabecera.setDefaultAlignment(Qt.AlignCenter)
+        # Las columnas de texto (usuario y nombre) van alineadas a la izquierda,
+        # igual que su contenido; el resto queda centrado.
+        for columna in (1, 2):
+            encabezado_col = self.usuarios_table.horizontalHeaderItem(columna)
+            if encabezado_col:
+                encabezado_col.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.usuarios_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.usuarios_table.setSelectionMode(QTableWidget.SingleSelection)
         self.usuarios_table.setAlternatingRowColors(True)
         self.usuarios_table.verticalHeader().setVisible(False)
-        self.usuarios_table.verticalHeader().setDefaultSectionSize(52)
+        self.usuarios_table.verticalHeader().setDefaultSectionSize(self.ALTO_FILA)
         self.usuarios_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.usuarios_table.setShowGrid(False)
         self.usuarios_table.setFocusPolicy(Qt.NoFocus)
@@ -455,23 +606,35 @@ class UsuariosMixin:
             self.usuarios_table.setUpdatesEnabled(False)
             self.usuarios_table.setRowCount(len(usuarios))
             for fila, usuario in enumerate(usuarios):
-                self.usuarios_table.setItem(fila, 0, QTableWidgetItem(str(usuario["id_usuario"])))
-                self.usuarios_table.setItem(fila, 1, QTableWidgetItem(usuario["usuario"]))
-                self.usuarios_table.setItem(fila, 2, QTableWidgetItem(usuario["nombre_completo"]))
-                es_super = usuario["rol"] == "SUPER_ADMIN"
                 self.usuarios_table.setItem(
-                    fila, 3, _item_etiqueta(usuario["rol"], "#1E4E96" if es_super else "#475569")
-                )
+                    fila, 0, _item_centrado(str(usuario["id_usuario"])))
+                item_usuario = QTableWidgetItem(usuario["usuario"])
+                item_usuario.setToolTip(usuario["usuario"])
+                self.usuarios_table.setItem(fila, 1, item_usuario)
+                item_nombre = QTableWidgetItem(usuario["nombre_completo"])
+                item_nombre.setToolTip(usuario["nombre_completo"])
+                self.usuarios_table.setItem(fila, 2, item_nombre)
+
+                # Rol y estado: la celda guarda el dato (UserRole) y un chip lo dibuja.
+                rol = usuario["rol"]
+                es_super = rol == "SUPER_ADMIN"
+                self.usuarios_table.setItem(fila, 3, _item_centrado("", rol))
+                self.usuarios_table.setCellWidget(
+                    fila, 3, _chip_tabla(rol, "chipRolSuper" if es_super else "chipRolAdmin"))
 
                 activo = bool(usuario.get("activo", False))
-                estado = _item_etiqueta("ACTIVO" if activo else "INACTIVO",
-                                        "#15803D" if activo else "#B91C1C")
-                estado.setData(Qt.UserRole, activo)
-                self.usuarios_table.setItem(fila, 4, estado)
+                self.usuarios_table.setItem(fila, 4, _item_centrado("", activo))
+                self.usuarios_table.setCellWidget(
+                    fila, 4,
+                    _chip_tabla("ACTIVO" if activo else "INACTIVO",
+                                "chipActivo" if activo else "chipInactivo"))
 
                 acciones = QWidget(self.usuarios_table)
+                acciones.setObjectName("celdaAcciones")
                 acciones_layout = QHBoxLayout(acciones)
-                acciones_layout.setContentsMargins(6, 0, 6, 0)
+                # Sin margen vertical: los botones tienen alto fijo y se centran
+                # con AlignVCenter, así nunca tocan el borde de la fila.
+                acciones_layout.setContentsMargins(8, 0, 8, 0)
                 acciones_layout.setSpacing(10)
 
                 btn_editar = self._boton_tabla(
@@ -494,8 +657,8 @@ class UsuariosMixin:
                 btn_editar.setEnabled(self._es_super_admin())
                 btn_estado.setEnabled(self._es_super_admin())
                 acciones_layout.addStretch(1)
-                acciones_layout.addWidget(btn_editar)
-                acciones_layout.addWidget(btn_estado)
+                acciones_layout.addWidget(btn_editar, 0, Qt.AlignVCenter)
+                acciones_layout.addWidget(btn_estado, 0, Qt.AlignVCenter)
                 acciones_layout.addStretch(1)
                 self.usuarios_table.setCellWidget(fila, 5, acciones)
             self.usuarios_table.setUpdatesEnabled(True)
