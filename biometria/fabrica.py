@@ -159,6 +159,11 @@ class LectorZK:
         self.ancho = 256
         self.alto = 300
         self.modelo = info.modelo if info is not None else "Lector ZKTeco"
+        self._base_huellas_clave = None
+        self._base_huellas_lista = False
+        self._base_huellas_indices = []
+        self._base_huellas_errores = 0
+        self._base_1n_fallida = False
 
     # ------------------------------------------------------------------
     def conectar(self):
@@ -207,6 +212,11 @@ class LectorZK:
         self.ancho = self.sdk.ancho
         self.alto = self.sdk.alto
         self.conectado = True
+        self._base_huellas_clave = None
+        self._base_huellas_lista = False
+        self._base_huellas_indices = []
+        self._base_huellas_errores = 0
+        self._base_1n_fallida = False
         log.info(
             "Lector ZKTeco conectado: %s (%dx%d)",
             self.modelo, self.ancho, self.alto,
@@ -222,12 +232,116 @@ class LectorZK:
                 log.debug("Error cerrando el SDK: %s", error)
             self.sdk = None
         self.conectado = False
+        self._base_huellas_clave = None
+        self._base_huellas_lista = False
+        self._base_huellas_indices = []
 
     def __enter__(self):
         return self.conectar()
 
     def __exit__(self, *args):
         self.cerrar()
+
+    # ── identificación 1:N nativa ──────────────────────────────────
+    def base_huellas_disponible(self):
+        """False si la SDK no pudo cargar la base 1:N en este lector."""
+        return not self._base_1n_fallida
+
+    def iniciar_base_huellas(self):
+        """Vacía la caché 1:N y la deja lista para recibir plantillas."""
+        self._requerido()
+        if self._base_1n_fallida:
+            raise ErrorLector("La base 1:N no está disponible en este lector")
+        self.sdk.limpiar_base()
+        self._base_huellas_clave = None
+        self._base_huellas_lista = False
+        self._base_huellas_indices = []
+        self._base_huellas_errores = 0
+
+    def agregar_lote_base_huellas(self, plantillas, indices, desde, hasta):
+        """Agrega un tramo de plantillas a la caché 1:N.
+
+        ``indices`` contiene los índices reales de los candidatos compatibles
+        con este lector. Devuelve la posición hasta la que se procesó.
+        """
+        self._requerido()
+        if self._base_huellas_lista:
+            raise ErrorLector("La base 1:N ya está cargada")
+        total = len(indices)
+        desde = max(0, int(desde))
+        hasta = min(total, int(hasta))
+        consecutivos = 0
+        for posicion in range(desde, hasta):
+            indice = indices[posicion]
+            fid = len(self._base_huellas_indices) + 1
+            try:
+                self.sdk.agregar_a_base(fid, plantillas[indice])
+            except Exception as error:
+                consecutivos += 1
+                self._base_huellas_errores += 1
+                if consecutivos >= 20:
+                    self.descartar_base_huellas()
+                    raise ErrorLector(
+                        "No se pudo cargar la base 1:N de huellas: "
+                        f"{error}"
+                    ) from error
+                if self._base_huellas_errores <= 5:
+                    log.warning(
+                        "Huella omitida al cargar la base 1:N (%s): %s",
+                        indice, error,
+                    )
+                continue
+            consecutivos = 0
+            self._base_huellas_indices.append(indice)
+        return hasta
+
+    def terminar_base_huellas(self, clave=None):
+        """Marca la caché 1:N como lista para identificar capturas."""
+        if not self._base_huellas_indices:
+            raise ErrorLector("La base 1:N quedó vacía")
+        self._base_huellas_clave = clave
+        self._base_huellas_lista = True
+
+    def base_huellas_lista(self, clave=None):
+        """True si la base ya está cargada para la misma versión de plantillas."""
+        return (
+            self._base_huellas_lista
+            and not self._base_1n_fallida
+            and self._base_huellas_clave == clave
+        )
+
+    def descartar_base_huellas(self):
+        """Invalida la caché 1:N y evita reintentos costosos en este lector."""
+        self._base_huellas_clave = None
+        self._base_huellas_lista = False
+        self._base_huellas_indices = []
+        self._base_1n_fallida = True
+        if self.sdk:
+            try:
+                self.sdk.limpiar_base()
+            except Exception:  # pragma: no cover
+                log.debug("Error limpiando la base 1:N", exc_info=True)
+
+    def identificar_captura(self, captura):
+        """Identifica una captura contra toda la base 1:N.
+
+        Devuelve ``(indice_candidato, score)`` o ``None`` si no hay una
+        coincidencia que supere el umbral.
+        """
+        self._requerido()
+        if not self._base_huellas_lista:
+            raise ErrorLector("La base 1:N todavía no está cargada")
+        fid, score = self.sdk.identificar_en_base(captura)
+        if fid <= 0:
+            return None
+        try:
+            indice = self._base_huellas_indices[fid - 1]
+        except IndexError:
+            log.warning("La SDK devolvió un identificador de huella inválido: %s", fid)
+            return None
+        if score < UMBRAL_VERIFICACION:
+            return None
+        return indice, float(score)
 
     # ------------------------------------------------------------------
     def capturar_imagen(self):

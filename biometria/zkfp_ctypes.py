@@ -21,6 +21,10 @@ Documentación de la C API (incluida en el SDK):
     HANDLE ZKFPM_DBInit();
     int  ZKFPM_DBFree(HANDLE hDBCache);
     int  ZKFPM_DBMerge(HANDLE, temp1, temp2, temp3, regTemp, unsigned int* cb);
+    int  ZKFPM_DBAdd(HANDLE, unsigned int fid, unsigned char* temp, unsigned int cb);
+    int  ZKFPM_DBClear(HANDLE hDBCache);
+    int  ZKFPM_DBIdentify(HANDLE, unsigned char* temp, unsigned int cb,
+                          unsigned int* fid, unsigned int* score);
     int  ZKFPM_DBMatch(HANDLE, temp1, unsigned int cb1, temp2, unsigned int cb2);
     int  ZKFPM_GetParameters(HANDLE, int nParamCode, unsigned char* pv, unsigned int* cb);
 
@@ -61,6 +65,8 @@ ZKFP_ERR_CANCEL = -18
 ZKFP_ERR_MERGE = -22
 ZKFP_ERR_NOT_OPENED = -23
 ZKFP_ERR_NOT_INIT = -24
+# La SDK usa -17 en DBIdentify cuando ninguna plantilla de la caché coincide.
+ZKFP_ERR_NO_MATCH = -17
 
 # Códigos de parámetro
 PARAM_ANCHO_IMAGEN = 1
@@ -225,6 +231,21 @@ class ZKFingerSDK:
             ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
             ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint),
         ]
+        lib.ZKFPM_DBAdd.restype = ctypes.c_int
+        lib.ZKFPM_DBAdd.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_char_p, ctypes.c_uint,
+        ]
+        lib.ZKFPM_DBClear.restype = ctypes.c_int
+        lib.ZKFPM_DBClear.argtypes = [ctypes.c_void_p]
+        lib.ZKFPM_DBIdentify.restype = ctypes.c_int
+        lib.ZKFPM_DBIdentify.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p, ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.POINTER(ctypes.c_uint),
+        ]
         lib.ZKFPM_DBMatch.restype = ctypes.c_int
         lib.ZKFPM_DBMatch.argtypes = [
             ctypes.c_void_p,
@@ -378,6 +399,57 @@ class ZKFingerSDK:
                 f"(código {ret})"
             )
         return buffer_salida.raw[:tamaño_salida.value]
+
+    def limpiar_base(self):
+        """Vacía la caché 1:N asociada al lector."""
+        if not self.hdbcache:
+            raise RuntimeError("La caché de plantillas no está inicializada")
+        ret = self._lib.ZKFPM_DBClear(self.hdbcache)
+        if ret != ZKFP_ERR_OK:
+            raise RuntimeError(f"No se pudo limpiar la base de huellas (código {ret})")
+
+    def agregar_a_base(self, fid, plantilla):
+        """Agrega una plantilla a la caché 1:N con un identificador positivo."""
+        if not self.hdbcache:
+            raise RuntimeError("La caché de plantillas no está inicializada")
+        if not plantilla:
+            raise ValueError("La plantilla está vacía")
+        if not 1 <= int(fid) <= 0xFFFFFFFF:
+            raise ValueError("El identificador de huella debe estar entre 1 y 2^32-1")
+        ret = self._lib.ZKFPM_DBAdd(
+            self.hdbcache,
+            int(fid),
+            ctypes.create_string_buffer(plantilla, len(plantilla)),
+            len(plantilla),
+        )
+        if ret != ZKFP_ERR_OK:
+            raise RuntimeError(f"No se pudo agregar la huella a la base (código {ret})")
+
+    def identificar_en_base(self, plantilla):
+        """Busca la mejor coincidencia en la caché 1:N.
+
+        Devuelve ``(fid, score)``. Si no hay coincidencia devuelve ``(0, 0)``.
+        """
+        if not self.hdbcache:
+            raise RuntimeError("La caché de plantillas no está inicializada")
+        if not plantilla:
+            return 0, 0
+        fid = ctypes.c_uint(0)
+        score = ctypes.c_uint(0)
+        ret = self._lib.ZKFPM_DBIdentify(
+            self.hdbcache,
+            ctypes.create_string_buffer(plantilla, len(plantilla)),
+            len(plantilla),
+            ctypes.byref(fid),
+            ctypes.byref(score),
+        )
+        # Distintas versiones de la SDK devuelven -17 u otro error con fid=0
+        # cuando ninguna plantilla coincide. fid=0 es la señal inequívoca.
+        if ret == ZKFP_ERR_NO_MATCH or (ret != ZKFP_ERR_OK and fid.value == 0):
+            return 0, 0
+        if ret != ZKFP_ERR_OK:
+            raise RuntimeError(f"Error identificando la huella (código {ret})")
+        return int(fid.value), int(score.value)
 
     def comparar_plantillas(self, plantilla_a, plantilla_b):
         """Compara dos plantillas 1:1 (DBMatch). Devuelve el score (0-100, negativo=error)."""

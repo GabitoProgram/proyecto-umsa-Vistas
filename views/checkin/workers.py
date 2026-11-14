@@ -23,9 +23,12 @@ PRESUPUESTO_COMPARACION_MS = 15
 
 _ERROR_SIN_DEDO = "No se pudo capturar la huella"
 
-# Con 5000 postulantes y al menos 2 huellas por persona se necesitan 10000
-# plantillas. El servidor también acepta este límite ampliado.
+# Con cerca de 6000 plantillas el servidor también acepta este límite ampliado.
 LIMITE_PLANTILLAS = 20000
+
+# Cuántas plantillas se agregan a la base 1:N por vuelta del bucle de la UI.
+# Cargar 6000 de golpe congelaría la pantalla varios segundos.
+LOTE_CARGA_BASE_HUELLAS = 50
 
 # Las peticiones al servidor salen por aquí, fuera del hilo de la interfaz.
 _pool_red = QThreadPool()
@@ -123,7 +126,9 @@ class IdentificacionHuellaController:
         2. Abre el lector (si ya está abierto de una vuelta anterior, lo
            reutiliza) y espera el dedo *sondeando*: consulta al lector cada
            ``INTERVALO_SONDEO_MS`` sin quedarse esperando.
-        3. Compara la captura con las plantillas por lotes pequeños.
+        3. Carga una caché 1:N en el lector y resuelve la captura con una
+           sola llamada nativa. Si el lector no la soporta, compara las
+           plantillas por lotes pequeños como respaldo.
         4. Registra el ingreso en segundo plano y devuelve los datos del
            postulante (nombre, aula, materia, asiento).
 
@@ -151,6 +156,11 @@ class IdentificacionHuellaController:
         self._cancelado = False
         self._pendiente_red = False
         self._entrega = None
+        self._version_plantillas = None
+        self._usar_base_1n = False
+        self._base_1n_clave = None
+        self._base_1n_pos = 0
+        self._base_1n_inicio = 0.0
 
     @property
     def activo(self):
@@ -249,6 +259,7 @@ class IdentificacionHuellaController:
             return
         self.candidatos = datos.get("candidatos") or []
         self.sin_habilitar = datos.get("sin_habilitar") or []
+        self._version_plantillas = datos.get("version")
         self.vista._resumen_huellas(len(self.candidatos), len(self.sin_habilitar))
 
         if not self.candidatos:
@@ -299,6 +310,97 @@ class IdentificacionHuellaController:
             self.lector = None
             self._fallar(str(error))
             return
+        self._usar_base_1n = self._soporta_base_1n()
+        if self._usar_base_1n:
+            QTimer.singleShot(0, self._preparar_base_1n)
+        else:
+            QTimer.singleShot(0, self._comparar)
+
+    def _soporta_base_1n(self):
+        """True si el lector puede identificar con una caché 1:N nativa."""
+        metodos = (
+            "iniciar_base_huellas",
+            "agregar_lote_base_huellas",
+            "terminar_base_huellas",
+            "base_huellas_lista",
+            "identificar_captura",
+            "descartar_base_huellas",
+        )
+        if not all(callable(getattr(self.lector, nombre, None))
+                   for nombre in metodos):
+            return False
+        disponible = getattr(self.lector, "base_huellas_disponible", None)
+        return disponible() if callable(disponible) else True
+
+    def _clave_base_1n(self):
+        version = self._version_plantillas
+        if version is None:
+            # Sin versión del servidor, se usa la instancia preparada: es
+            # preferible recargar la base antes que identificar con datos viejos.
+            version = f"mem:{id(self._plantillas)}"
+        return (self.id_examen, self._formato, version, len(self._indices))
+
+    def _preparar_base_1n(self):
+        """Carga la caché 1:N sin bloquear la interfaz."""
+        if not self._activo:
+            return
+        if not self._usar_base_1n:
+            QTimer.singleShot(0, self._comparar)
+            return
+        clave = self._clave_base_1n()
+        try:
+            if self.lector.base_huellas_lista(clave):
+                QTimer.singleShot(0, self._comparar)
+                return
+            self.vista._estado_identificacion("Preparando huellas del examen…")
+            self.lector.iniciar_base_huellas()
+        except Exception as error:
+            log.warning(
+                "No se pudo preparar la base 1:N; se usará comparación "
+                "individual: %s", error,
+            )
+            self._usar_base_1n = False
+            try:
+                self.lector.descartar_base_huellas()
+            except Exception:  # pragma: no cover
+                pass
+            QTimer.singleShot(0, self._comparar)
+            return
+        self._base_1n_clave = clave
+        self._base_1n_pos = 0
+        self._base_1n_inicio = time.perf_counter()
+        QTimer.singleShot(0, self._cargar_lote_base_1n)
+
+    def _cargar_lote_base_1n(self):
+        """Agrega unas pocas plantillas y devuelve el control a la interfaz."""
+        if not self._activo:
+            return
+        total = len(self._indices)
+        hasta = min(total, self._base_1n_pos + LOTE_CARGA_BASE_HUELLAS)
+        try:
+            self._base_1n_pos = self.lector.agregar_lote_base_huellas(
+                self._plantillas, self._indices, self._base_1n_pos, hasta)
+            if self._base_1n_pos < total:
+                self.vista._estado_identificacion(
+                    f"Preparando huellas… {self._base_1n_pos}/{total}")
+                QTimer.singleShot(0, self._cargar_lote_base_1n)
+                return
+            self.lector.terminar_base_huellas(self._base_1n_clave)
+        except Exception as error:
+            log.warning(
+                "No se pudo cargar la base 1:N; se usará comparación "
+                "individual: %s", error,
+            )
+            self._usar_base_1n = False
+            self._base_1n_clave = None
+            try:
+                self.lector.descartar_base_huellas()
+            except Exception:  # pragma: no cover
+                pass
+            QTimer.singleShot(0, self._comparar)
+            return
+        gastado = time.perf_counter() - self._base_1n_inicio
+        log.info("Base 1:N lista: %d plantillas en %.2f s", total, gastado)
         QTimer.singleShot(0, self._comparar)
 
     # ── captura y comparación ──────────────────────────────────────
@@ -320,7 +422,9 @@ class IdentificacionHuellaController:
             return
         total = len(self._indices)
         try:
-            if hasattr(self.lector, "comparar_captura_con_plantilla"):
+            if self._usar_base_1n:
+                self._paso_base_1n()
+            elif hasattr(self.lector, "comparar_captura_con_plantilla"):
                 self._paso_con_captura(total)
             else:
                 self._paso_por_plantilla(total)
@@ -336,8 +440,50 @@ class IdentificacionHuellaController:
             log.exception("Error comparando con el lector")
             self._fallar(f"Error del lector de huella: {error}")
 
+    def _paso_base_1n(self):
+        """Identifica la captura con una sola llamada nativa 1:N."""
+        if self._captura_actual is None:
+            if not self._aviso_espera:
+                self.vista._estado_identificacion("Apoya el dedo en el lector…")
+                self._aviso_espera = True
+            self._captura_actual = self._capturar_si_hay_dedo()
+            if self._captura_actual is None:
+                QTimer.singleShot(INTERVALO_SONDEO_MS, self._comparar)
+                return
+            self._aviso_espera = False
+
+        inicio = time.perf_counter()
+        try:
+            resultado = self.lector.identificar_captura(self._captura_actual)
+        except Exception as error:
+            log.warning(
+                "Falló la identificación 1:N; se usará comparación individual: %s",
+                error,
+            )
+            self._usar_base_1n = False
+            self._posicion = 0
+            try:
+                self.lector.descartar_base_huellas()
+            except Exception:  # pragma: no cover
+                pass
+            self._paso_con_captura(len(self._indices))
+            return
+
+        gastado_ms = (time.perf_counter() - inicio) * 1000
+        if resultado is None:
+            log.info("Huella sin coincidencia en la base 1:N (%.0f ms)", gastado_ms)
+            self._sin_coincidencia()
+            return
+
+        indice, score = resultado
+        log.info(
+            "Identificación 1:N en %.0f ms: coincidencia con %s",
+            gastado_ms, self.candidatos[indice].get("nombre_completo"),
+        )
+        self._registrar(self.candidatos[indice], self._plantillas[indice], score)
+
     def _paso_con_captura(self, total):
-        """Lectores que capturan una sola vez (ZKTeco)."""
+        """Respaldo para lectores que capturan una sola vez (ZKTeco)."""
         if self._captura_actual is None:
             if not self._aviso_espera:
                 self.vista._estado_identificacion("Apoya el dedo en el lector…")
